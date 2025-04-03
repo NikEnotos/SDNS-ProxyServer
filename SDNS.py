@@ -10,13 +10,13 @@ import dns.rdataclass
 import dns.name
 import dns.query
 import dns.rcode
-import json
-from typing import Tuple, Dict, Any, List, Optional
+from typing import Tuple, Dict, Any, Optional
 import logging
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
 
 class DNSProxyServer:
     def __init__(self, listen_ip: str = '0.0.0.0', listen_port: int = 53, doh_url: str = 'https://1.1.1.1/dns-query'):
@@ -37,10 +37,10 @@ class DNSProxyServer:
         self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.tcp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
-        self.shutdown_event = threading.Event() # Flag to signal shutdown
-        self._udp_thread = None # To potentially join later if needed
-        self._tcp_thread = None # To potentially join later if needed
-        
+        self.shutdown_event = threading.Event()  # Flag to signal shutdown
+        self._udp_thread = None  # To potentially join later if needed
+        self._tcp_thread = None  # To potentially join later if needed
+
     def start(self):
         """Start the DNS proxy server (both UDP and TCP)"""
         try:
@@ -50,7 +50,7 @@ class DNSProxyServer:
             self._udp_thread.daemon = True
             self._udp_thread.start()
             logger.info(f"UDP DNS proxy listening on {self.listen_ip}:{self.listen_port}")
-            
+
             # Start TCP server
             self.tcp_socket.bind((self.listen_ip, self.listen_port))
             self.tcp_socket.listen(10)  # Allow up to 10 queued connections
@@ -58,7 +58,6 @@ class DNSProxyServer:
             self._tcp_thread.daemon = True
             self._tcp_thread.start()
             logger.info(f"TCP DNS proxy listening on {self.listen_ip}:{self.listen_port}")
-
 
             # Keep the main thread alive
             while not self.shutdown_event.is_set():
@@ -70,57 +69,39 @@ class DNSProxyServer:
         except Exception as e:
             logger.error(f"Server startup error: {e}")
         finally:
-             # Signal threads to stop
-             self.shutdown_event.set()
+            # Signal threads to stop
+            self.shutdown_event.set()
 
-             # Close sockets AFTER signaling (this might interrupt blocking calls in threads)
-             logger.info("Closing sockets...")
-             # Check that DNSProxyServer object has created udp_socket, and it's not None before closing it
-             if hasattr(self, 'udp_socket') and self.udp_socket:
-                 try:
-                     # Optional: Wake up the UDP listener if it's blocked on recvfrom.
-                     # Create a temporary socket to send a dummy packet.
-                     # This is a common pattern but might feel like a hack.
-                     # Alternatively, rely on the socket closure to raise an exception.
-                     # temp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                     # temp_sock.sendto(b'', (self.listen_ip if self.listen_ip != '0.0.0.0' else '127.0.0.1', self.listen_port))
-                     # temp_sock.close()
-                     self.udp_socket.close()
-                 except Exception as e_udp_close:
-                     logger.error(f"Error closing UDP socket: {e_udp_close}")
+            # Close sockets AFTER signaling (this might interrupt blocking calls in threads)
+            logger.info("Closing sockets...")
+            # Check that DNSProxyServer object has created udp_socket, and it's not None before closing it
+            if hasattr(self, 'udp_socket') and self.udp_socket:
+                try:
+                    self.udp_socket.close()
+                except Exception as e_udp_close:
+                    logger.error(f"Error closing UDP socket: {e_udp_close}")
 
-             # Check that DNSProxyServer object has created tcp_socket, and it's not None before closing it
-             if hasattr(self, 'tcp_socket') and self.tcp_socket:
-                 try:
-                     # Optional: Wake up TCP listener if blocked on accept.
-                     # This is harder; closing the socket is usually the way.
-                     self.tcp_socket.close()
-                 except Exception as e_tcp_close:
-                     logger.error(f"Error closing TCP socket: {e_tcp_close}")
+            # Check that DNSProxyServer object has created tcp_socket, and it's not None before closing it
+            if hasattr(self, 'tcp_socket') and self.tcp_socket:
+                try:
+                    self.tcp_socket.close()
+                except Exception as e_tcp_close:
+                    logger.error(f"Error closing TCP socket: {e_tcp_close}")
 
-             # Optional: Wait for threads to finish
-             if self._udp_thread:
-                 self._udp_thread.join(timeout=2)
-             if self._tcp_thread:
-                 self._tcp_thread.join(timeout=2)
-             logger.info("Shutdown complete.")
-        
-        # try:
-        #     # Keep the main thread alive
-        #     while True:
-        #         time.sleep(1)
-        # except KeyboardInterrupt:
-        #     logger.info("Shutting down DNS proxy server...")
-        #     self.udp_socket.close()
-        #     self.tcp_socket.close()
-            
+            # Optional: Wait for threads to finish
+            if self._udp_thread:
+                self._udp_thread.join(timeout=2)
+            if self._tcp_thread:
+                self._tcp_thread.join(timeout=2)
+            logger.info("Shutdown complete.")
+
     def _udp_listener(self):
         """Listen for and process UDP DNS requests"""
 
         while not self.shutdown_event.is_set():
             try:
                 # Set a timeout so recvfrom doesn't block forever
-                self.udp_socket.settimeout(1.0) # Timeout after 1 second
+                self.udp_socket.settimeout(1.0)  # Timeout after 1 second
                 data, addr = self.udp_socket.recvfrom(4096)
                 if self._is_dns_request(data):
                     # Parse the DNS request
@@ -132,7 +113,6 @@ class DNSProxyServer:
                         qtype = dns.rdatatype.to_text(question.rdtype)
                         logger.info(f"Received UDP DNS request from \t{str(addr):<26} \t{qname} (Type: {qtype})")
 
-
                     threading.Thread(target=self._handle_dns_request, args=(data, addr, False)).start()
                 else:
                     logger.info(f"Received non-DNS UDP packet from {addr}, ignoring")
@@ -141,49 +121,52 @@ class DNSProxyServer:
                 # Loop continues, checking the shutdown_event again
                 continue
             except (socket.error, OSError) as e:
-                 # If the socket is closed while recvfrom is blocking, an error occurs.
-                 # Check if shutdown is in progress.
-                 if self.shutdown_event.is_set():
-                     logger.info("UDP listener shutting down due to socket closure.")
-                     break # Exit loop cleanly
-                 else:
-                     logger.error(f"Error in UDP listener: {e}")
-                     # Optional: Add a small delay before retrying to prevent fast error loops
-                     time.sleep(0.1)
+                # If the socket is closed while recvfrom is blocking, an error occurs.
+                # Check if shutdown is in progress.
+                if self.shutdown_event.is_set():
+                    logger.info("UDP listener shutting down due to socket closure.")
+                    break  # Exit loop cleanly
+                # Check if it's the specific error and log as warning/info if desired
+                elif isinstance(e, OSError) and hasattr(e, 'winerror') and e.winerror == 10054:
+                    logger.warning(f"Non-critical error in UDP listener: {e}")
+                else:
+                    logger.error(f"Error in UDP listener: {e}")
+                    # Optional: Add a small delay before retrying to prevent fast error loops
+                    time.sleep(0.1)
             except Exception as e:
                 logger.error(f"Error in UDP listener: {e}")
                 time.sleep(0.1)
         logger.info("UDP listener thread finished.")
-    
+
     def _tcp_listener(self):
         """Listen for and process TCP DNS requests"""
 
-        while not self.shutdown_event.is_set(): # Check event
+        while not self.shutdown_event.is_set():  # Check event
             try:
                 # Set a timeout so accept doesn't block forever
-                self.tcp_socket.settimeout(1.0) # Timeout after 1 second
+                self.tcp_socket.settimeout(1.0)  # Timeout after 1 second
                 client_sock, addr = self.tcp_socket.accept()
                 logger.info(f"TCP connection from {addr}")
                 threading.Thread(target=self._handle_tcp_client, args=(client_sock, addr)).start()
 
             except socket.timeout:
-                 # Loop continues, checking the shutdown_event again
+                # Loop continues, checking the shutdown_event again
                 continue
             except (socket.error, OSError) as e:
                 # If the socket is closed while accept is blocking, an error occurs.
                 # Check if shutdown is in progress.
                 if self.shutdown_event.is_set():
                     logger.info("TCP listener shutting down due to socket closure.")
-                    break # Exit loop cleanly
+                    break  # Exit loop cleanly
                 else:
                     logger.error(f"Error in TCP listener: {e}")
                     # Optional: Add a small delay before retrying
                     time.sleep(0.1)
             except Exception as e:
                 logger.error(f"Error in TCP listener: {e}")
-                time.sleep(0.1) # Prevent fast error loops
+                time.sleep(0.1)  # Prevent fast error loops
         logger.info("TCP listener thread finished.")
-    
+
     def _handle_tcp_client(self, client_sock: socket.socket, addr: Tuple[str, int]):
         """
         Handle a TCP client connection
@@ -208,13 +191,13 @@ class DNSProxyServer:
                 logger.warning(f"Zero-length TCP message from {addr}, closing connection")
                 client_sock.close()
                 return
-                
+
             data = client_sock.recv(length)
             if len(data) != length:
                 logger.warning(f"Incomplete TCP message from {addr}, closing connection")
                 client_sock.close()
                 return
-                
+
             if self._is_dns_request(data):
                 # Parse the DNS request
                 request = dns.message.from_wire(data)
@@ -240,7 +223,7 @@ class DNSProxyServer:
                 client_sock.close()
             except:
                 pass
-    
+
     def _is_dns_request(self, data: bytes) -> bool:
         """
         Check if the given data appears to be a DNS request.
@@ -254,7 +237,7 @@ class DNSProxyServer:
         # DNS messages must be at least 12 bytes (header size)
         if len(data) < 12:
             return False
-            
+
         try:
             # Try to parse as a DNS message
             msg = dns.message.from_wire(data)
@@ -265,8 +248,8 @@ class DNSProxyServer:
             return msg.flags & 0x8000 == 0 and len(msg.question) > 0
         except Exception:
             return False
-    
-    def _handle_dns_request(self, data: bytes, addr: Tuple[str, int], is_tcp: bool): # TODO remove is_tcp
+
+    def _handle_dns_request(self, data: bytes, addr: Tuple[str, int], is_tcp: bool):  # TODO remove is_tcp
         """
         Handle a DNS request by forwarding it to DoH and sending the response back to host
 
@@ -285,7 +268,7 @@ class DNSProxyServer:
 
         except Exception as e:
             logger.error(f"Error handling DNS request from {addr}: {e}")
-    
+
     def _process_dns_request(self, dns_data: bytes) -> Optional[bytes]:
         """
         Process a DNS request by forwarding it to DoH and returning the response.
@@ -299,7 +282,7 @@ class DNSProxyServer:
         try:
             # Forward to DoH
             response_data = self._forward_to_doh(dns_data)
-            
+
             if response_data:
                 # Parse the response to log it
                 response = dns.message.from_wire(response_data)
@@ -313,7 +296,7 @@ class DNSProxyServer:
                     requested_domain = response.question[0].name.to_text()
 
                 for answer in response.answer:
-                # Loop through each resource record in the answer.
+                    # Loop through each resource record in the answer.
                     for record in answer:
                         # Check if the record is an A record (IPv4 address).
                         if record.rdtype == dns.rdatatype.A:
@@ -329,7 +312,7 @@ class DNSProxyServer:
                 response = dns.message.make_response(request)
                 response.set_rcode(dns.rcode.SERVFAIL)
                 return response.to_wire()
-                
+
         except Exception as e:
             logger.error(f"Error processing DNS request: {e}")
             try:
@@ -340,7 +323,7 @@ class DNSProxyServer:
                 return response.to_wire()
             except:
                 return None
-    
+
     def _forward_to_doh(self, dns_data: bytes) -> Optional[bytes]:
         """
         Forward a DNS request to the DoH server.
@@ -353,8 +336,9 @@ class DNSProxyServer:
         """
         try:
             # Base64 encode the DNS request for DoH
+            # Used URL-safe variant which uses "-" and "_" instead of "+" and "/"
             dns_b64 = base64.urlsafe_b64encode(dns_data).decode('utf-8').rstrip('=')
-            
+
             # Method 1: Using binary DNS wire format
             headers = {
                 'Accept': 'application/dns-message',
@@ -365,11 +349,11 @@ class DNSProxyServer:
                 data=dns_data,
                 headers=headers
             )
-            
+
             # Check for successful response
             if response.status_code == 200 and response.headers.get('content-type') == 'application/dns-message':
                 return response.content
-                
+
             # Method 2: Fall back to GET with dns parameter if POST fails
             response = requests.get(
                 self.doh_url,
@@ -379,22 +363,17 @@ class DNSProxyServer:
 
             if response.status_code == 200 and response.headers.get('content-type') == 'application/dns-message':
                 return response.content
-                
+
             # Method 3: Try JSON format as a last resort
-            headers = {
-                'Accept': 'application/dns-json',
-                'Content-Type': 'application/dns-json'
-            }
-            
             # Parse the DNS request to get the query details
             request = dns.message.from_wire(dns_data)
             if len(request.question) > 0:
                 qname = request.question[0].name.to_text()
                 qtype = dns.rdatatype.to_text(request.question[0].rdtype)
-                
+
                 # Use JSON API
                 json_url = 'https://1.1.1.1/dns-query'
-                #json_url = 'https://8.8.8.8/resolve'   # TODO
+                # json_url = 'https://8.8.8.8/resolve'   # TODO
                 response = requests.get(
                     json_url,
                     params={
@@ -408,10 +387,9 @@ class DNSProxyServer:
                     # Convert JSON response back to DNS wire format
                     return self._json_to_dns_response(response.json(), request)
 
-
             logger.error(f"DoH request failed with status {response.status_code}")
             return None
-            
+
         except Exception as e:
             logger.error(f"Error forwarding to DoH: {e}")
             return None
@@ -517,9 +495,10 @@ class DNSProxyServer:
                 logger.error(f"Failed to return a SERVFAIL response: {convert_e}")
                 return None  # Absolute last resort
 
+
 if __name__ == "__main__":
     # Create and start the proxy server
-    #https://9.9.9.9:5053/dns-query        https://8.8.8.8/dns-query
+    # https://9.9.9.9:5053/dns-query        https://8.8.8.8/dns-query
     server = DNSProxyServer(doh_url="https://9.9.9.9:5053/dns-query")
     try:
         server.start()
