@@ -1,3 +1,4 @@
+import random
 import socket
 import struct
 import requests
@@ -15,18 +16,25 @@ import logging
 
 
 class DNSProxyServer:
-    def __init__(self, listen_ip: str = '0.0.0.0', listen_port: int = 53, doh_url: str = 'https://1.1.1.1/dns-query', log_level: logging = logging.ERROR):
+    def __init__(self, listen_ip: str = '0.0.0.0', listen_port: int = 53, doh_providers: list[str] = None,
+                 randomize: bool = False, log_level: logging = logging.ERROR):
         """
         Initialize the DNS proxy server with given or default parameters.
         
         Args:
             listen_ip: IP address to listen on (default: '0.0.0.0' - all interfaces)
             listen_port: Port to listen on (default: 53 - standard DNS port)
-            doh_url: DNS over HTTPS URL to use (default: Cloudflare's 1.1.1.1) TODO: change
+            doh_providers: A list of DNS over HTTPS URLs to use. (default: Cloudflare's 1.1.1.1)
+            randomize: If True, pick a random DoH provider for each query.
+            log_level: Level of console logging verbosity
          """
         self.listen_ip = listen_ip
         self.listen_port = listen_port
-        self.doh_url = doh_url
+        # self.doh_url = doh_url
+
+        # Use provided list or a default if None is passed (though main.py handles default)
+        self.doh_providers = doh_providers if doh_providers else ['https://1.1.1.1/dns-query']
+        self.randomize = randomize
 
         self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -65,7 +73,7 @@ class DNSProxyServer:
                 time.sleep(0.5)
 
         except KeyboardInterrupt:
-            self.logger.warning("Shutting down DNS proxy server...")
+            print("Shutting down DNS proxy server...")
         except Exception as e:
             self.logger.error(f"Server startup error: {e}")
         finally:
@@ -73,7 +81,7 @@ class DNSProxyServer:
             self.shutdown_event.set()
 
             # Close sockets AFTER signaling (this might interrupt blocking calls in threads)
-            self.logger.warning("Closing sockets...")
+            print("Closing sockets...")
             # Check that DNSProxyServer object has created udp_socket, and it's not None before closing it
             if hasattr(self, 'udp_socket') and self.udp_socket:
                 try:
@@ -93,7 +101,7 @@ class DNSProxyServer:
                 self._udp_thread.join(timeout=2)
             if self._tcp_thread:
                 self._tcp_thread.join(timeout=2)
-            self.logger.warning("Shutdown complete.")
+            print("Shutdown complete.")
 
     def _udp_listener(self):
         """Listen for and process UDP DNS requests"""
@@ -111,7 +119,8 @@ class DNSProxyServer:
                     for question in request.question:
                         qname = question.name.to_text()
                         qtype = dns.rdatatype.to_text(question.rdtype)
-                        self.logger.info(f"Received UDP DNS request from \t{str(addr):<26} \t{qname} (Type: {qtype})")
+                        self.logger.info(
+                            f"[+] Received UDP DNS request from \t{str(addr):<26} \t{qname} (Type: {qtype})")
 
                     threading.Thread(target=self._handle_dns_request, args=(data, addr, False)).start()
                 else:
@@ -205,7 +214,7 @@ class DNSProxyServer:
                 for question in request.question:
                     qname = question.name.to_text()
                     qtype = dns.rdatatype.to_text(question.rdtype)
-                    self.logger.info(f"Received TCP DNS request from \t{str(addr):<25} \t{qname} (Type: {qtype})")
+                    self.logger.info(f"[+] Received TCP DNS request from \t{str(addr):<25} \t{qname} (Type: {qtype})")
 
                 response = self._process_dns_request(data)
                 if response:
@@ -263,7 +272,8 @@ class DNSProxyServer:
                 self.udp_socket.sendto(response, addr)
 
             except (socket.error, OSError) as send_err:
-                self.logger.warning(f"Failed to send UDP response to {addr}: {send_err}. Client might have disconnected.")
+                self.logger.warning(
+                    f"Failed to send UDP response to {addr}: {send_err}. Client might have disconnected.")
 
         except Exception as e:
             self.logger.error(f"Error handling DNS request from {addr}: {e}")
@@ -299,10 +309,10 @@ class DNSProxyServer:
                     for record in answer:
                         # Check if the record is an A record (IPv4 address).
                         if record.rdtype == dns.rdatatype.A:
-                            self.logger.info(f"  ↳ IPv4: {record.address:<15}\t[{requested_domain}]")
+                            self.logger.info(f"  ↳ IPv4: {record.address:<15}\t\t[{requested_domain}]")
 
                         elif record.rdtype == dns.rdatatype.AAAA:
-                            self.logger.info(f"  ↳ IPv6: {record.address:<39}\t[{requested_domain}]")
+                            self.logger.info(f"  ↳ IPv6: {record.address:<39}\t\t[{requested_domain}]")
                 return response_data
             else:
                 # If DoH failed, create a SERVFAIL response
@@ -323,9 +333,22 @@ class DNSProxyServer:
             except:
                 return None
 
+    def _get_doh_url(self) -> str:
+        """Selects a DoH URL based on the randomization setting."""
+        if self.randomize and len(self.doh_providers) > 1:
+            return random.choice(self.doh_providers)
+        elif self.doh_providers:  # Make sure list is not empty
+            # Default to the first provider if not randomizing or only one provider
+            return self.doh_providers[0]
+        else:
+            # Fallback needed if the list could be empty (shouldn't happen with argparse default)
+            self.logger.error("No DoH providers configured!")
+            # Returning a default or raising an error might be appropriate
+            return 'https://1.1.1.1/dns-query'  # Or raise ConfigurationError
+
     def _forward_to_doh(self, dns_data: bytes) -> Optional[bytes]:
         """
-        Forward a DNS request to the DoH server.
+        Forward a DNS request to a selected DoH server.
         
         Args:
             dns_data: The raw DNS request data
@@ -333,6 +356,11 @@ class DNSProxyServer:
         Returns:
             bytes: The DNS response data from the DoH server, or None if an error occurred
         """
+
+        # Select the DoH URL for this specific request
+        selected_doh_url = self._get_doh_url()
+        self.logger.debug(f"Forwarding query to DoH provider: {selected_doh_url}")  # Log which one is used
+
         try:
             # Base64 encode the DNS request for DoH
             # Used URL-safe variant which uses "-" and "_" instead of "+" and "/"
@@ -344,24 +372,32 @@ class DNSProxyServer:
                 'Content-Type': 'application/dns-message'
             }
             response = requests.post(
-                self.doh_url,
+                selected_doh_url,
                 data=dns_data,
-                headers=headers
+                headers=headers,
+                timeout=5
             )
 
             # Check for successful response
             if response.status_code == 200 and response.headers.get('content-type') == 'application/dns-message':
                 return response.content
+            else:
+                self.logger.error(
+                    f"POST DoH request to {selected_doh_url} failed, trying to use GET method as fallback.")
 
             # Method 2: Fall back to GET with dns parameter if POST fails
             response = requests.get(
-                self.doh_url,
+                selected_doh_url,
                 params={'dns': dns_b64},
-                headers={'Accept': 'application/dns-message'}
+                headers={'Accept': 'application/dns-message'},
+                timeout=5
             )
 
             if response.status_code == 200 and response.headers.get('content-type') == 'application/dns-message':
                 return response.content
+            else:
+                self.logger.error(
+                    f"GET DoH request to {selected_doh_url} failed, trying to use JSON method as the last resort.")
 
             # Method 3: Try JSON format as a last resort
             # Parse the DNS request to get the query details
@@ -379,18 +415,28 @@ class DNSProxyServer:
                         'name': qname,
                         'type': qtype
                     },
-                    headers={'Accept': 'application/dns-json'}
+                    headers={'Accept': 'application/dns-json'},
+                    timeout=5
                 )
 
                 if response.status_code == 200 and 'application/dns-json' in response.headers.get('content-type', ''):
                     # Convert JSON response back to DNS wire format
+                    self.logger.warning(
+                        f"DoH request to {selected_doh_url} was successful using JSON as a last resort.")
                     return self._json_to_dns_response(response.json(), request)
 
-            self.logger.error(f"DoH request failed with status {response.status_code}")
+            self.logger.error(f"DoH request failed using {selected_doh_url}. Status: {response.status_code}")
             return None
 
+        except requests.exceptions.Timeout:
+            self.logger.error(f"DoH request to {selected_doh_url} timed out.")
+            return None
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"Error forwarding to DoH provider {selected_doh_url}: {e}")
+            return None
+        # General exception handler
         except Exception as e:
-            self.logger.error(f"Error forwarding to DoH: {e}")
+            self.logger.error(f"Unexpected error forwarding to DoH {selected_doh_url}: {e}")
             return None
 
     def _json_to_dns_response(self, json_data: Dict[str, Any], original_request: dns.message.Message) -> Optional[
