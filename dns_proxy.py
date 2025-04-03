@@ -13,21 +13,17 @@ import dns.rcode
 from typing import Tuple, Dict, Any, Optional
 import logging
 
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
 
 class DNSProxyServer:
-    def __init__(self, listen_ip: str = '0.0.0.0', listen_port: int = 53, doh_url: str = 'https://1.1.1.1/dns-query'):
+    def __init__(self, listen_ip: str = '0.0.0.0', listen_port: int = 53, doh_url: str = 'https://1.1.1.1/dns-query', log_level: logging = logging.ERROR):
         """
         Initialize the DNS proxy server with given or default parameters.
         
         Args:
             listen_ip: IP address to listen on (default: '0.0.0.0' - all interfaces)
             listen_port: Port to listen on (default: 53 - standard DNS port)
-            doh_url: DNS over HTTPS URL to use (default: Cloudflare's 1.1.1.1)
-        """
+            doh_url: DNS over HTTPS URL to use (default: Cloudflare's 1.1.1.1) TODO: change
+         """
         self.listen_ip = listen_ip
         self.listen_port = listen_port
         self.doh_url = doh_url
@@ -41,6 +37,10 @@ class DNSProxyServer:
         self._udp_thread = None  # To potentially join later if needed
         self._tcp_thread = None  # To potentially join later if needed
 
+        # Set up logging
+        logging.basicConfig(level=log_level, format='%(asctime)s - %(levelname)s - %(message)s')
+        self.logger = logging.getLogger(__name__)
+
     def start(self):
         """Start the DNS proxy server (both UDP and TCP)"""
         try:
@@ -49,7 +49,7 @@ class DNSProxyServer:
             self._udp_thread = threading.Thread(target=self._udp_listener)
             self._udp_thread.daemon = True
             self._udp_thread.start()
-            logger.info(f"UDP DNS proxy listening on {self.listen_ip}:{self.listen_port}")
+            self.logger.info(f"UDP DNS proxy listening on {self.listen_ip}:{self.listen_port}")
 
             # Start TCP server
             self.tcp_socket.bind((self.listen_ip, self.listen_port))
@@ -57,7 +57,7 @@ class DNSProxyServer:
             self._tcp_thread = threading.Thread(target=self._tcp_listener)
             self._tcp_thread.daemon = True
             self._tcp_thread.start()
-            logger.info(f"TCP DNS proxy listening on {self.listen_ip}:{self.listen_port}")
+            self.logger.info(f"TCP DNS proxy listening on {self.listen_ip}:{self.listen_port}")
 
             # Keep the main thread alive
             while not self.shutdown_event.is_set():
@@ -65,35 +65,35 @@ class DNSProxyServer:
                 time.sleep(0.5)
 
         except KeyboardInterrupt:
-            logger.info("Shutting down DNS proxy server...")
+            self.logger.warning("Shutting down DNS proxy server...")
         except Exception as e:
-            logger.error(f"Server startup error: {e}")
+            self.logger.error(f"Server startup error: {e}")
         finally:
             # Signal threads to stop
             self.shutdown_event.set()
 
             # Close sockets AFTER signaling (this might interrupt blocking calls in threads)
-            logger.info("Closing sockets...")
+            self.logger.warning("Closing sockets...")
             # Check that DNSProxyServer object has created udp_socket, and it's not None before closing it
             if hasattr(self, 'udp_socket') and self.udp_socket:
                 try:
                     self.udp_socket.close()
                 except Exception as e_udp_close:
-                    logger.error(f"Error closing UDP socket: {e_udp_close}")
+                    self.logger.error(f"Error closing UDP socket: {e_udp_close}")
 
             # Check that DNSProxyServer object has created tcp_socket, and it's not None before closing it
             if hasattr(self, 'tcp_socket') and self.tcp_socket:
                 try:
                     self.tcp_socket.close()
                 except Exception as e_tcp_close:
-                    logger.error(f"Error closing TCP socket: {e_tcp_close}")
+                    self.logger.error(f"Error closing TCP socket: {e_tcp_close}")
 
             # Optional: Wait for threads to finish
             if self._udp_thread:
                 self._udp_thread.join(timeout=2)
             if self._tcp_thread:
                 self._tcp_thread.join(timeout=2)
-            logger.info("Shutdown complete.")
+            self.logger.warning("Shutdown complete.")
 
     def _udp_listener(self):
         """Listen for and process UDP DNS requests"""
@@ -111,11 +111,11 @@ class DNSProxyServer:
                     for question in request.question:
                         qname = question.name.to_text()
                         qtype = dns.rdatatype.to_text(question.rdtype)
-                        logger.info(f"Received UDP DNS request from \t{str(addr):<26} \t{qname} (Type: {qtype})")
+                        self.logger.info(f"Received UDP DNS request from \t{str(addr):<26} \t{qname} (Type: {qtype})")
 
                     threading.Thread(target=self._handle_dns_request, args=(data, addr, False)).start()
                 else:
-                    logger.info(f"Received non-DNS UDP packet from {addr}, ignoring")
+                    self.logger.info(f"Received non-DNS UDP packet from {addr}, ignoring")
 
             except socket.timeout:
                 # Loop continues, checking the shutdown_event again
@@ -124,19 +124,19 @@ class DNSProxyServer:
                 # If the socket is closed while recvfrom is blocking, an error occurs.
                 # Check if shutdown is in progress.
                 if self.shutdown_event.is_set():
-                    logger.info("UDP listener shutting down due to socket closure.")
+                    self.logger.info("UDP listener shutting down due to socket closure.")
                     break  # Exit loop cleanly
                 # Check if it's the specific error and log as warning/info if desired
                 elif isinstance(e, OSError) and hasattr(e, 'winerror') and e.winerror == 10054:
-                    logger.warning(f"Non-critical error in UDP listener: {e}")
+                    self.logger.warning(f"Non-critical error in UDP listener: {e}")
                 else:
-                    logger.error(f"Error in UDP listener: {e}")
+                    self.logger.error(f"Error in UDP listener: {e}")
                     # Optional: Add a small delay before retrying to prevent fast error loops
                     time.sleep(0.1)
             except Exception as e:
-                logger.error(f"Error in UDP listener: {e}")
+                self.logger.error(f"Error in UDP listener: {e}")
                 time.sleep(0.1)
-        logger.info("UDP listener thread finished.")
+        self.logger.info("UDP listener thread finished.")
 
     def _tcp_listener(self):
         """Listen for and process TCP DNS requests"""
@@ -146,7 +146,6 @@ class DNSProxyServer:
                 # Set a timeout so accept doesn't block forever
                 self.tcp_socket.settimeout(1.0)  # Timeout after 1 second
                 client_sock, addr = self.tcp_socket.accept()
-                logger.info(f"TCP connection from {addr}")
                 threading.Thread(target=self._handle_tcp_client, args=(client_sock, addr)).start()
 
             except socket.timeout:
@@ -156,16 +155,16 @@ class DNSProxyServer:
                 # If the socket is closed while accept is blocking, an error occurs.
                 # Check if shutdown is in progress.
                 if self.shutdown_event.is_set():
-                    logger.info("TCP listener shutting down due to socket closure.")
+                    self.logger.info("TCP listener shutting down due to socket closure.")
                     break  # Exit loop cleanly
                 else:
-                    logger.error(f"Error in TCP listener: {e}")
+                    self.logger.error(f"Error in TCP listener: {e}")
                     # Optional: Add a small delay before retrying
                     time.sleep(0.1)
             except Exception as e:
-                logger.error(f"Error in TCP listener: {e}")
+                self.logger.error(f"Error in TCP listener: {e}")
                 time.sleep(0.1)  # Prevent fast error loops
-        logger.info("TCP listener thread finished.")
+        self.logger.info("TCP listener thread finished.")
 
     def _handle_tcp_client(self, client_sock: socket.socket, addr: Tuple[str, int]):
         """
@@ -179,7 +178,7 @@ class DNSProxyServer:
             # In TCP DNS, the first 2 bytes indicate the length of the DNS message
             length_bytes = client_sock.recv(2)
             if len(length_bytes) != 2:
-                logger.warning(f"Invalid TCP message from {addr}, closing connection")
+                self.logger.warning(f"Invalid TCP message from {addr}, closing connection")
                 client_sock.close()
                 return
 
@@ -188,13 +187,13 @@ class DNSProxyServer:
             # 'H' specifies the data type as an unsigned short integer
             length = struct.unpack('!H', length_bytes)[0]
             if length == 0:
-                logger.warning(f"Zero-length TCP message from {addr}, closing connection")
+                self.logger.warning(f"Zero-length TCP message from {addr}, closing connection")
                 client_sock.close()
                 return
 
             data = client_sock.recv(length)
             if len(data) != length:
-                logger.warning(f"Incomplete TCP message from {addr}, closing connection")
+                self.logger.warning(f"Incomplete TCP message from {addr}, closing connection")
                 client_sock.close()
                 return
 
@@ -206,7 +205,7 @@ class DNSProxyServer:
                 for question in request.question:
                     qname = question.name.to_text()
                     qtype = dns.rdatatype.to_text(question.rdtype)
-                    logger.info(f"Received TCP DNS request from \t{str(addr):<25} \t{qname} (Type: {qtype})")
+                    self.logger.info(f"Received TCP DNS request from \t{str(addr):<25} \t{qname} (Type: {qtype})")
 
                 response = self._process_dns_request(data)
                 if response:
@@ -214,11 +213,11 @@ class DNSProxyServer:
                     response_length = struct.pack('!H', len(response))
                     client_sock.sendall(response_length + response)
             else:
-                logger.info(f"Received non-DNS TCP message from {addr}, ignoring")
+                self.logger.info(f"Received non-DNS TCP message from {addr}, ignoring")
 
             client_sock.close()
         except Exception as e:
-            logger.error(f"Error handling TCP client {addr}: {e}")
+            self.logger.error(f"Error handling TCP client {addr}: {e}")
             try:
                 client_sock.close()
             except:
@@ -264,10 +263,10 @@ class DNSProxyServer:
                 self.udp_socket.sendto(response, addr)
 
             except (socket.error, OSError) as send_err:
-                logger.warning(f"Failed to send UDP response to {addr}: {send_err}. Client might have disconnected.")
+                self.logger.warning(f"Failed to send UDP response to {addr}: {send_err}. Client might have disconnected.")
 
         except Exception as e:
-            logger.error(f"Error handling DNS request from {addr}: {e}")
+            self.logger.error(f"Error handling DNS request from {addr}: {e}")
 
     def _process_dns_request(self, dns_data: bytes) -> Optional[bytes]:
         """
@@ -288,7 +287,7 @@ class DNSProxyServer:
                 response = dns.message.from_wire(response_data)
                 rcode_text = dns.rcode.to_text(response.rcode())
                 answer_count = len(response.answer)
-                logger.info(f"[+] DoH Response: {rcode_text}, {answer_count} answers")
+                self.logger.info(f"[+] DoH Response: {rcode_text}, {answer_count} answers")
 
                 requested_domain = "No 'question' in response"
 
@@ -300,10 +299,10 @@ class DNSProxyServer:
                     for record in answer:
                         # Check if the record is an A record (IPv4 address).
                         if record.rdtype == dns.rdatatype.A:
-                            logger.info(f"  ↳ IPv4: {record.address:<15}\t[{requested_domain}]")
+                            self.logger.info(f"  ↳ IPv4: {record.address:<15}\t[{requested_domain}]")
 
                         elif record.rdtype == dns.rdatatype.AAAA:
-                            logger.info(f"  ↳ IPv6: {record.address:<39}\t[{requested_domain}]")
+                            self.logger.info(f"  ↳ IPv6: {record.address:<39}\t[{requested_domain}]")
                 return response_data
             else:
                 # If DoH failed, create a SERVFAIL response
@@ -314,7 +313,7 @@ class DNSProxyServer:
                 return response.to_wire()
 
         except Exception as e:
-            logger.error(f"Error processing DNS request: {e}")
+            self.logger.error(f"Error processing DNS request: {e}")
             try:
                 # Try to make a SERVFAIL response
                 request = dns.message.from_wire(dns_data)
@@ -387,11 +386,11 @@ class DNSProxyServer:
                     # Convert JSON response back to DNS wire format
                     return self._json_to_dns_response(response.json(), request)
 
-            logger.error(f"DoH request failed with status {response.status_code}")
+            self.logger.error(f"DoH request failed with status {response.status_code}")
             return None
 
         except Exception as e:
-            logger.error(f"Error forwarding to DoH: {e}")
+            self.logger.error(f"Error forwarding to DoH: {e}")
             return None
 
     def _json_to_dns_response(self, json_data: Dict[str, Any], original_request: dns.message.Message) -> Optional[
@@ -416,7 +415,7 @@ class DNSProxyServer:
                 response_rcode = dns.rcode.Rcode(status_code_int)
                 response.set_rcode(response_rcode)
             except ValueError:
-                logger.error(f"Invalid RCODE value received in JSON: {status_code_int}. Defaulting to SERVFAIL.")
+                self.logger.error(f"Invalid RCODE value received in JSON: {status_code_int}. Defaulting to SERVFAIL.")
                 response.set_rcode(dns.rcode.SERVFAIL)
 
             # Process Answer section
@@ -434,7 +433,7 @@ class DNSProxyServer:
                             # Convert integer type to dns.rdatatype.RdataType enum
                             rdtype = dns.rdatatype.RdataType(type_val)
                         except ValueError:
-                            logger.warning(
+                            self.logger.warning(
                                 f"Invalid integer RR TYPE received in JSON: {type_val} for name {name}. Skipping record.")
                             continue  # Skip this answer record
                     elif isinstance(type_val, str):
@@ -442,11 +441,11 @@ class DNSProxyServer:
                         try:
                             rdtype = dns.rdatatype.from_text(type_val)
                         except dns.rdatatype.UnknownRdatatype:
-                            logger.warning(
+                            self.logger.warning(
                                 f"Unknown string RR TYPE received in JSON: '{type_val}' for name {name}. Skipping record.")
                             continue  # Skip this answer record
                     else:
-                        logger.warning(f"Missing or invalid RR TYPE in JSON for name {name}. Skipping record.")
+                        self.logger.warning(f"Missing or invalid RR TYPE in JSON for name {name}. Skipping record.")
                         continue  # Skip this answer record
 
                     # Create appropriate rdata based on type
@@ -470,7 +469,7 @@ class DNSProxyServer:
                         # HTTPS data is defined in RFC 9115 and is a string of parameters
                         rdata = dns.rdata.from_text(dns.rdataclass.IN, rdtype, data)
                     else:
-                        logger.warning(
+                        self.logger.warning(
                             f"Unsupported RR TYPE {dns.rdatatype.to_text(rdtype)} ({rdtype}) for name {name}. Skipping record.")
                         continue  # Skip unsupported types
 
@@ -479,28 +478,18 @@ class DNSProxyServer:
                     response.answer.append(rrset)
 
                 except Exception as e_ans:
-                    logger.error(f"Error processing JSON answer record {answer}: {e_ans}")
+                    self.logger.error(f"Error processing JSON answer record {answer}: {e_ans}")
                     continue  # Skip problematic answer records
 
             return response.to_wire()
 
         except Exception as convert_e:
-            logger.error(f"Failed to convert JSON to DNS response: {convert_e}")
+            self.logger.error(f"Failed to convert JSON to DNS response: {convert_e}")
             # Fallback: return a SERVFAIL based on original request if conversion fails badly
             try:
                 fail_response = dns.message.make_response(original_request)
                 fail_response.set_rcode(dns.rcode.SERVFAIL)
                 return fail_response.to_wire()
             except Exception as e:
-                logger.error(f"Failed to return a SERVFAIL response: {convert_e}")
+                self.logger.error(f"Failed to return a SERVFAIL response: {convert_e}")
                 return None  # Absolute last resort
-
-
-if __name__ == "__main__":
-    # Create and start the proxy server
-    # https://9.9.9.9:5053/dns-query        https://8.8.8.8/dns-query
-    server = DNSProxyServer(doh_url="https://9.9.9.9:5053/dns-query")
-    try:
-        server.start()
-    except KeyboardInterrupt:
-        print("Shutting down...")
