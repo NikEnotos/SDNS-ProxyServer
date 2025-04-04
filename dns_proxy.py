@@ -11,8 +11,9 @@ import dns.rdataclass
 import dns.name
 import dns.query
 import dns.rcode
-from typing import Tuple, Dict, Any, Optional
 import logging
+from typing import Tuple, Dict, Any, Optional
+
 
 
 class DNSProxyServer:
@@ -42,8 +43,8 @@ class DNSProxyServer:
         self.tcp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
         self.shutdown_event = threading.Event()  # Flag to signal shutdown
-        self._udp_thread = None  # To potentially join later if needed
-        self._tcp_thread = None  # To potentially join later if needed
+        self._udp_thread = None  # To join later
+        self._tcp_thread = None  # To join later
 
         # Set up logging
         logging.basicConfig(level=log_level, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -133,7 +134,7 @@ class DNSProxyServer:
                 # If the socket is closed while recvfrom is blocking, an error occurs.
                 # Check if shutdown is in progress.
                 if self.shutdown_event.is_set():
-                    self.logger.info("UDP listener shutting down due to socket closure.")
+                    self.logger.debug("UDP listener shutting down due to socket closure.")
                     break  # Exit loop cleanly
                 # Check if it's the specific error and log as warning/info if desired
                 elif isinstance(e, OSError) and hasattr(e, 'winerror') and e.winerror == 10054:
@@ -145,7 +146,7 @@ class DNSProxyServer:
             except Exception as e:
                 self.logger.error(f"Error in UDP listener: {e}")
                 time.sleep(0.1)
-        self.logger.info("UDP listener thread finished.")
+        self.logger.debug("UDP listener thread finished.")
 
     def _tcp_listener(self):
         """Listen for and process TCP DNS requests"""
@@ -164,7 +165,7 @@ class DNSProxyServer:
                 # If the socket is closed while accept is blocking, an error occurs.
                 # Check if shutdown is in progress.
                 if self.shutdown_event.is_set():
-                    self.logger.info("TCP listener shutting down due to socket closure.")
+                    self.logger.debug("TCP listener shutting down due to socket closure.")
                     break  # Exit loop cleanly
                 else:
                     self.logger.error(f"Error in TCP listener: {e}")
@@ -173,7 +174,7 @@ class DNSProxyServer:
             except Exception as e:
                 self.logger.error(f"Error in TCP listener: {e}")
                 time.sleep(0.1)  # Prevent fast error loops
-        self.logger.info("TCP listener thread finished.")
+        self.logger.debug("TCP listener thread finished.")
 
     def _handle_tcp_client(self, client_sock: socket.socket, addr: Tuple[str, int]):
         """
@@ -300,7 +301,6 @@ class DNSProxyServer:
                 self.logger.info(f"[+] DoH Response: {rcode_text}, {answer_count} answers")
 
                 requested_domain = "No 'question' in response"
-
                 if response.question:
                     requested_domain = response.question[0].name.to_text()
 
@@ -311,8 +311,11 @@ class DNSProxyServer:
                         if record.rdtype == dns.rdatatype.A:
                             self.logger.info(f"  ↳ IPv4: {record.address:<15}\t\t[{requested_domain}]")
 
+
                         elif record.rdtype == dns.rdatatype.AAAA:
                             self.logger.info(f"  ↳ IPv6: {record.address:<39}\t\t[{requested_domain}]")
+
+                # TODO: add IP addresses check hare
                 return response_data
             else:
                 # If DoH failed, create a SERVFAIL response
@@ -324,14 +327,68 @@ class DNSProxyServer:
 
         except Exception as e:
             self.logger.error(f"Error processing DNS request: {e}")
-            try:
-                # Try to make a SERVFAIL response
-                request = dns.message.from_wire(dns_data)
-                response = dns.message.make_response(request)
-                response.set_rcode(dns.rcode.SERVFAIL)
-                return response.to_wire()
-            except:
-                return None
+            return self._create_error_response(dns_data, dns.rcode.SERVFAIL)
+
+    def _create_error_response(self, original_request: bytes, rcode: dns.rcode.Rcode) -> Optional[bytes]:
+        """ Helper to create a DNS error response (e.g., SERVFAIL, REFUSED). """
+        try:
+            # Try to make a SERVFAIL response
+            request = dns.message.from_wire(original_request)
+            response = dns.message.make_response(request)
+            response.set_rcode(rcode)
+            return response.to_wire()
+        except Exception as e:
+            self.logger.error(f"Failed to create error response with rcode {rcode}: {e}")
+            return None
+
+
+    def _create_redirection_response(self, dns_data: bytes, redirect_ip: str = "127.0.0.1") -> Optional[bytes]:
+        """
+        Creates a DNS response with a safe IP address for redirection.
+
+        Args:
+            dns_data: The raw DNS request data
+            redirect_ip: safe IP address to redirect to (default is localhost)
+
+        Returns:
+            bytes: Forged DNS response data with provided IP for redirection, or None if an error occurred
+        """
+        request = dns.message.from_wire(dns_data)
+
+        qname = request.question[0].name
+        qtype = request.question[0].rdtype
+        domain_to_check = qname.to_text(omit_final_dot=True)
+        self.logger.debug(
+            f"Extracted domain for checking: {domain_to_check} (Type: {dns.rdatatype.to_text(qtype)})")
+
+        # Creating response based on the request
+        response = dns.message.make_response(request)
+        response.set_rcode(dns.rcode.NOERROR)
+        response.flags |= dns.flags.AA  # Authoritative Answer flag, common for sinks/blocks
+
+        # Clear any potential answers copied from request template
+        response.answer.clear()
+
+        # Create the A record pointing to the redirect_ip (local server is default)
+        try:
+            # Create the Rdata object for the A record
+            rdata = dns.rdata.from_text(dns.rdataclass.IN, dns.rdatatype.A, redirect_ip)
+            # Create the RRset (Resource Record Set) using short TTL (60 sec)
+            rrset = dns.rrset.from_rdata(qname, 60, rdata)
+            # Add the RRset to the answer section
+            response.answer.append(rrset)
+
+
+            self.logger.warning(f"  ↳ [REDIRECTION]: to {redirect_ip:<15}\t\tfor [{domain_to_check}]")
+
+            # Return the crafted response in wire format
+            return response.to_wire()
+
+        except Exception as e_redir:
+            self.logger.error(f"Failed to create redirection response for {domain_to_check}: {e_redir}")
+            # Fallback to SERVFAIL if redirection crafting fails
+            return self._create_error_response(dns_data, dns.rcode.SERVFAIL)
+
 
     def _get_doh_url(self) -> str:
         """Selects a DoH URL based on the randomization setting."""
