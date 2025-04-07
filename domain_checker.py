@@ -14,8 +14,6 @@ ISMALICIOUS_API_KEY = os.getenv('ISMALICIOUS_API_KEY')
 ISMALICIOUS_API_SECRET = os.getenv('ISMALICIOUS_API_SECRET')
 
 log_level = logging.WARNING
-logging.basicConfig(level=log_level, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
 
 class DomainChecker:
     """
@@ -60,7 +58,7 @@ class DomainChecker:
         """Internal method to run IsMalicious check in a thread."""
 
         if not ISMALICIOUS_API_KEY or not ISMALICIOUS_API_SECRET:
-            logger.warning("IsMalicious API key or SECRET key not configured. Skipping check.")
+            self.logger.warning("IsMalicious API key or SECRET key not configured. Skipping check.")
             return
         if not self.domain:
             self.logger.warning("Empty domain passed to IsMalicious check.")
@@ -92,23 +90,23 @@ class DomainChecker:
             suspicious_count = reputation_data.get('suspicious', 0)  # Get suspicious count, default 0
 
             if suspicious_count > 0:
-                logger.warning(f"[!] isMalicious check: [{self.domain}] flagged as SUSPICIOUS with score {suspicious_count}")
+                self.logger.warning(f"[!] isMalicious check: [{self.domain}] flagged as SUSPICIOUS with score {suspicious_count}")
             if malicious_count > 0:
-                logger.warning(f"[!!!] isMalicious check: [{self.domain}] flagged as MALICIOUS with score {malicious_count}")
+                self.logger.warning(f"[!!!] isMalicious check: [{self.domain}] flagged as MALICIOUS with score {malicious_count}")
 
         except requests.exceptions.Timeout:
-            logger.error(f"Error checking {self.domain} with IsMalicious: Request timed out.")
+            self.logger.error(f"Error checking {self.domain} with IsMalicious: Request timed out.")
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 404:
-                logger.info(f"IsMalicious check: Domain {self.domain} not found (404).")
+                self.logger.info(f"IsMalicious check: Domain {self.domain} not found (404).")
             elif e.response.status_code == 429:
-                logger.warning(f"IsMalicious check: Rate limit exceeded (429).")
+                self.logger.warning(f"IsMalicious check: Rate limit exceeded (429).")
             else:
-                logger.error(f"Error checking {self.domain} with IsMalicious: HTTP {e.response.status_code} - {e}")
+                self.logger.error(f"Error checking {self.domain} with IsMalicious: HTTP {e.response.status_code} - {e}")
         except requests.exceptions.RequestException as e:
-            logger.error(f"Error checking {self.domain} with IsMalicious: {e}")
+            self.logger.error(f"Error checking {self.domain} with IsMalicious: {e}")
         except Exception as e:
-            logger.error(f"Unexpected error checking {self.domain} with IsMalicious: {e}")
+            self.logger.error(f"Unexpected error checking {self.domain} with IsMalicious: {e}")
         finally:
             # Safely update the instance attributes
             with self.lock:
@@ -119,7 +117,7 @@ class DomainChecker:
         """Internal method to run VirusTotal check in a thread."""
 
         if not VIRUSTOTAL_API_KEY:
-            logger.warning("VirusTotal API key not configured. Skipping check.")
+            self.logger.warning("VirusTotal API key not configured. Skipping check.")
             return
         if not self.domain:
             self.logger.warning("Empty domain passed to VirusTotal check.")
@@ -148,16 +146,16 @@ class DomainChecker:
             suspicious_count = stats.get('suspicious', 0)
 
             if suspicious_count > 0:
-                logger.warning(f"[!] VirusTotal check: [{self.domain}] flagged as SUSPICIOUS with score {suspicious_count}")
+                self.logger.warning(f"[!] VirusTotal check: [{self.domain}] flagged as SUSPICIOUS with score {suspicious_count}")
             if malicious_count > 0:
-                logger.warning(f"[!!!] VirusTotal check: [{self.domain}] flagged as MALICIOUS with score {malicious_count}")
+                self.logger.warning(f"[!!!] VirusTotal check: [{self.domain}] flagged as MALICIOUS with score {malicious_count}")
 
         except requests.exceptions.Timeout:
-            logger.error(f"Error checking {self.domain} with VirusTotal: Request timed out.")
+            self.logger.error(f"Error checking {self.domain} with VirusTotal: Request timed out.")
         except requests.exceptions.RequestException as e:
-            logger.error(f"Error checking {self.domain} with VirusTotal: {e}")
+            self.logger.error(f"Error checking {self.domain} with VirusTotal: {e}")
         except Exception as e:
-            logger.error(f"Unexpected error checking {self.domain} with VirusTotal: {e}")
+            self.logger.error(f"Unexpected error checking {self.domain} with VirusTotal: {e}")
         finally:
             # Safely update the instance attributes
             with self.lock:
@@ -175,7 +173,6 @@ class DomainChecker:
             self._im_thread = threading.Thread(target=self._check_domain_ismalicious_thread, daemon=True)
             self._im_thread.start()
             self.logger.debug(f"Started IsMalicious check thread for {self.domain}")
-
 
     def wait_for_completion(self, timeout: Optional[float] = 5.0):
         """
@@ -198,7 +195,6 @@ class DomainChecker:
                 self.logger.warning(f"IsMalicious check thread for {self.domain} timed out after {timeout}s.")
         self.logger.debug(f"All checks completed or timed out for {self.domain}")
 
-
     def get_scores(self) -> Tuple[int, int, int, int]:
         """
         Returns the collected scores after checks have run (or timed out).
@@ -209,12 +205,10 @@ class DomainChecker:
         with self.lock:  # Ensure reading consistent values
             return self.vt_malicious, self.vt_suspicious, self.im_malicious, self.im_suspicious
 
-
     def is_malicious(self, threshold: int = 1) -> bool:
         """Checks if the domain exceeds the malicious threshold from either source."""
         with self.lock:
             return self.vt_malicious >= threshold or self.im_malicious >= threshold
-
 
     def is_suspicious(self, threshold: int = 1) -> bool:
         """Checks if the domain exceeds the suspicious threshold from either source."""

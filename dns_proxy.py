@@ -65,14 +65,16 @@ class DNSProxyServer:
         try:
             # Start UDP server
             self.udp_socket.bind((self.listen_ip, self.listen_port))
-            self._udp_thread = threading.Thread(target=self._udp_listener, daemon = True)
+            self._udp_thread = threading.Thread(target=self._udp_listener)
+            self._udp_thread.daemon = True
             self._udp_thread.start()
             self.logger.info(f"UDP DNS proxy listening on {self.listen_ip}:{self.listen_port}")
 
             # Start TCP server
             self.tcp_socket.bind((self.listen_ip, self.listen_port))
             self.tcp_socket.listen(10)  # Allow up to 10 queued connections
-            self._tcp_thread = threading.Thread(target=self._tcp_listener, daemon = True)
+            self._tcp_thread = threading.Thread(target=self._tcp_listener)
+            self._tcp_thread.daemon = True
             self._tcp_thread.start()
             self.logger.info(f"TCP DNS proxy listening on {self.listen_ip}:{self.listen_port}")
 
@@ -81,12 +83,12 @@ class DNSProxyServer:
                 self.logger.info(f"Redirecting blocked domains to: {self.redirect_ip}")  # TODO: Implement in a different way
 
             # Keep the main thread alive
-            # while not self.shutdown_event.is_set():
-            #     # Sleep allows checking the event periodically and reduces CPU usage
-            #     time.sleep(0.5)
+            while not self.shutdown_event.is_set():
+                # Sleep allows checking the event periodically and reduces CPU usage
+                time.sleep(0.5)
 
             # Keep the main thread alive using the event's wait method
-            self.shutdown_event.wait()  # Wait until shutdown_event is set
+            #self.shutdown_event.wait()  # Wait until shutdown_event is set
 
         except KeyboardInterrupt:
             print("\nCtrl+C detected. Shutting down DNS proxy server...")
@@ -158,17 +160,14 @@ class DNSProxyServer:
                 continue
             except (socket.error, OSError) as e:
                 # If the socket is closed while recvfrom is blocking, an error occurs.
-                if self.shutdown_event.is_set() and isinstance(e, socket.error) and e.errno == 9:  # Bad file descriptor
-                    self.logger.info("UDP socket closed during shutdown.")
-                    break  # Exit loop cleanly
-
-                elif self.shutdown_event.is_set():
-                    self.logger.debug(f"UDP listener shutting down due to socket state: {e}")
+                # Check if shutdown is in progress.
+                if self.shutdown_event.is_set():
+                    self.logger.debug("UDP listener shutting down due to socket closure.")
                     break  # Exit loop cleanly
 
                 # Check if it's the specific error and log as warning/info if desired
                 elif isinstance(e, OSError) and hasattr(e, 'winerror') and e.winerror == 10054:
-                    self.logger.warning(f"Non-critical error in UDP listener: {e}")
+                    self.logger.info(f"Non-critical error in UDP listener: {e}")
 
                 else:
                     self.logger.error(f"Error in UDP listener: {e}", exc_info=True)
@@ -206,11 +205,9 @@ class DNSProxyServer:
                 continue
             except (socket.error, OSError) as e:
                 # If the socket is closed while accept is blocking, an error occurs.
-                if self.shutdown_event.is_set() and isinstance(e, socket.error) and e.errno == 9:  # Bad file descriptor
-                    self.logger.info("TCP listening socket closed during shutdown.")
-                    break
-                elif self.shutdown_event.is_set():
-                    self.logger.info(f"TCP listener shutting down due to socket state: {e}")
+                # Check if shutdown is in progress.
+                if self.shutdown_event.is_set():
+                    self.logger.debug("TCP listener shutting down due to socket closure.")
                     break
                 else:
                     self.logger.error(f"Error in TCP listener accept(): {e}", exc_info=True)
