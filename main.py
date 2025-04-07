@@ -135,16 +135,23 @@ def main():
         logger.error(
             "Error: No DoH providers configured. Please provide some via -d or ensure defaults are available.")
         sys.exit("Configuration error: No DoH providers specified.")
+    # --- End of Provider List Logic ---
 
-    # --- End Provider List Logic ---
 
     print("-" * 60)
     print("Starting DNS Proxy Server with the following settings:")
     print(f"  Listen IP:    {args.listen_ip}")
     print(f"  Listen Port:  {args.listen_port}")
-    print(f"  DoH Providers: ")
+
+    # Compare final_doh_providers to DEFAULT_DOH_PROVIDERS to decide whether to display [DEFAULT LIST] label
+    if sorted(final_doh_providers) == sorted(DEFAULT_DOH_PROVIDERS):
+        print(f"  DoH Providers:        [DEFAULT LIST]")
+    else:
+        print(f"  DoH Providers:        [CUSTOM LIST]")
+    # List all the providers that will be used
     for provider in final_doh_providers:
         print(f"\t\t{provider}")
+
     print(f"  Randomize:    {args.randomize}")
     print("-" * 60)
 
@@ -158,10 +165,8 @@ def main():
             doh_providers=final_doh_providers,
             randomize=args.randomize
         )
-        server.start() # This will block until KeyboardInterrupt or shutdown
-    except KeyboardInterrupt:
-        print("\nCtrl+C detected. Shutting down server...")
-        # The server's own shutdown logic should handle cleanup
+        server.start() # This will block until shutdown
+
     except Exception as e:
         # Use logger if implemented, otherwise print
         print(f"An error occurred: {e}", file=sys.stderr)
@@ -173,14 +178,6 @@ def main():
 if __name__ == "__main__":
     main()
 
-# if __name__ == "__main__":
-#     # Create and start the proxy server
-#     # https://9.9.9.9:5053/dns-query        https://8.8.8.8/dns-query
-#     server = DNSProxyServer(doh_url="https://9.9.9.9:5053/dns-query")
-#     try:
-#         server.start()
-#     except KeyboardInterrupt:
-#         print("Shutting down...")
 
 
 
