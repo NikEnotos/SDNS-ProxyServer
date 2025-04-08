@@ -14,6 +14,45 @@ DEFAULT_DOH_PROVIDERS = [
     'https://149.112.112.112:5053/dns-query'
 ]
 
+# Define regex allowing DoH URLs with IP addresses
+# Regex breakdown:
+    # ^https://       : Starts with https://
+    # (               : Start group for host
+    #  \d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3} : IPv4 address
+    # )               : End group for host
+    # (:[0-9]{1,5})?  : Optional port (1-5 digits)
+    # (/[\w\-./?=&%]*)? : Optional path (alphanumeric, -, ., /, ?, =, &, %)
+    # $               : End of string
+DOH_URL_PATTERN = re.compile(
+     r'^https://' # Must start with https://
+     r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})' # IPv4 address
+     r'(:[0-9]{1,5})?' # Optional port
+     r'(/[\w\-.=&?%+~#]*)?' # Optional path (allowing more chars like ~+#)
+     r'$' # End of string
+)
+
+# Simple IPv4/IPv6 regex for redirect IP validation
+IP_ADDRESS_PATTERN = re.compile(
+    r'^('
+    # IPv4
+    r'((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)'
+    r'|' # Or
+    # IPv6 (simplified, accepts valid formats but not exhaustive validation)
+    r'([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|'
+    r'([0-9a-fA-F]{1,4}:){1,7}:|'
+    r'([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|'
+    r'([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|'
+    r'([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|'
+    r'([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|'
+    r'([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|'
+    r'[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|'
+    r':((:[0-9a-fA-F]{1,4}){1,7}|:)|'
+    r'fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|'
+    r'::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])|'
+    r'([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])'
+    r')$'
+)
+
 def validate_doh_url(url_string):
     """
     Validates if a string is a plausible DoH URL using regex.
@@ -23,53 +62,31 @@ def validate_doh_url(url_string):
     Args:
         url_string: string to check for URL format
     """
-    # Regex breakdown:
-    # ^https://       : Starts with https://
-    # (               : Start group for host
-    #  \d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3} : IPv4 address
-    # )               : End group for host
-    # (:[0-9]{1,5})?  : Optional port (1-5 digits)
-    # (/[\w\-./?=&%]*)? : Optional path (alphanumeric, -, ., /, ?, =, &, %)
-    # $               : End of string
-    pattern = re.compile(r'^https://(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(:[0-9]{1,5})?(/[\w\-./?=&%]*)?$')
-    if not pattern.match(url_string):
+    if not DOH_URL_PATTERN.match(url_string):
         raise argparse.ArgumentTypeError(
             f"Invalid DoH URL format: '{url_string}'. "
-            "Must be https:// with IP, optional port, and optional path (e.g., /dns-query)."
+            "Must start with https://, followed by a valid domain or IP, optional port, and optional path."
         )
     # Return the valid string if it matches
     return url_string
+
+def validate_ip_address(ip_string):
+    """
+    Validates if a string is a valid IPv4 address.
+
+    Args:
+        ip_string: string of IPv4 address to validate
+    """
+    if not IP_ADDRESS_PATTERN.match(ip_string):
+         raise argparse.ArgumentTypeError(
+             f"Invalid IP address format: '{ip_string}'. Must be a valid IPv4 or IPv6 address."
+         )
+    return ip_string
 
 def main():
     parser = argparse.ArgumentParser(
         description="Run a DNS proxy server that replaces DNS queries with more secure DNS over HTTPS (DoH).",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter # Shows defaults in help
-    )
-
-    # Argument for specifying DoH providers (now defaults to None)
-    parser.add_argument(
-        '-d', '--doh-providers',
-        nargs='+',  # Accepts one or more space-separated values
-        default=None,  # Default is None, logic below will handle it
-        metavar='URL',
-        type=validate_doh_url,  # Add validation function here
-        help="List of DNS-over-HTTPS provider URLs. By default, this list REPLACES the built-in defaults. "
-             "Use -a or --add-to-defaults to append to the defaults instead."
-    )
-
-    # Argument to ADD providers to the default list instead of replacing
-    parser.add_argument(
-        '-a', '--add-to-defaults',
-        action='store_true',  # Makes it a boolean flag
-        help="If specified, URLs passed via --doh-providers are ADDED to the default list, "
-             "instead of replacing it. Duplicates are ignored."
-    )
-
-    # Argument to toggle randomization
-    parser.add_argument(
-        '-r', '--randomize',
-        action='store_true', # Makes it a boolean flag, True if present
-        help="Randomize the DoH provider selection for each request."
     )
 
     # Optional: Expose listen IP and port
@@ -86,7 +103,42 @@ def main():
         metavar='PORT',
         help="Port for the proxy server to listen on."
     )
-
+    # Argument for specifying DoH providers (now defaults to None)
+    parser.add_argument(
+        '-d', '--doh-providers',
+        nargs='+',  # Accepts one or more space-separated values
+        default=None,  # Default is None, logic below will handle it
+        metavar='URL',
+        type=validate_doh_url,  # Add validation function here
+        help="List of DNS-over-HTTPS provider URLs. By default, this list REPLACES the built-in defaults. "
+             "Use -a or --add-to-defaults to append to the defaults instead."
+    )
+    # Argument to ADD providers to the default list instead of replacing
+    parser.add_argument(
+        '-a', '--add-to-defaults',
+        action='store_true',  # Makes it a boolean flag
+        help="If specified, URLs passed via -d or --doh-providers are ADDED to the default list, "
+             "instead of replacing it. Duplicates are ignored."
+    )
+    # Argument to toggle randomization
+    parser.add_argument(
+        '-r', '--randomize',
+        action='store_true', # Makes it a boolean flag, True if present
+        help="Randomize the DoH provider selection for each request."
+    )
+    parser.add_argument(
+        '-b', '--block',
+        action='store_true', # Makes it a boolean flag, True if present
+        help="Enable or disable malicious/suspicious domain checking and blocking."
+    )
+    parser.add_argument(
+        '--redirect-ip',
+        default="0.0.0.0", # Common IP for NXDOMAIN-like blocking
+        type=validate_ip_address, # Validate the IP format
+        metavar='IP',
+        help="IPv4 or IPv6 address to return for blocked domains. "
+             "'0.0.0.0' results by default in a failed lookup for the client."
+    )
     parser.add_argument(
         '-v', '--verbose',
         action='count', # -v, -vv, -vvv increases verbosity
@@ -96,7 +148,7 @@ def main():
 
     args = parser.parse_args()
 
-    # --- Setup Logging based on Verbosity ---
+    # ----- Setup Logging based on Verbosity -----
     log_level = logging.ERROR       # Default
     if args.verbose == 1:
         log_level = logging.WARNING # -v option
@@ -108,10 +160,10 @@ def main():
     logging.basicConfig(level=log_level, format='%(asctime)s - %(levelname)s - %(message)s', stream=sys.stdout)
     # Get logger for this main module
     logger = logging.getLogger(__name__)
-    # --- End Logging Setup ---
+    # ----- End Logging Setup -----
 
 
-    # --- Determine the final list of DoH providers ---
+    # ----- Determine the final list of DoH providers -----
     final_doh_providers = []
     user_providers = args.doh_providers if args.doh_providers else []
 
@@ -120,40 +172,44 @@ def main():
         combined_providers = DEFAULT_DOH_PROVIDERS + user_providers
         # Use a set for uniqueness
         final_doh_providers = list(set(combined_providers))
-        logger.info("Adding user providers to default list.")
+        logger.info("Adding user-provided DoH URLs to default list.")
     elif user_providers:
         # User provided list explicitly, and not adding to defaults, so use only user's list
         final_doh_providers = user_providers
-        logger.info("Using user-provided list of providers exclusively.")
+        logger.info("Using only user-provided DoH URLs.")
     else:
         # No user list provided and not adding to defaults, so use the original defaults
         final_doh_providers = DEFAULT_DOH_PROVIDERS
-        logger.info("Using default list of providers.")
+        logger.info("Using the default list of DoH URLs.")
 
     # Ensure the final list is not empty
     if not final_doh_providers:
         logger.error(
             "Error: No DoH providers configured. Please provide some via -d or ensure defaults are available.")
         sys.exit("Configuration error: No DoH providers specified.")
-    # --- End of Provider List Logic ---
+    # ----- End of Provider List Logic -----
 
 
     print("-" * 60)
     print("Starting DNS Proxy Server with the following settings:")
-    print(f"  Listen IP:    {args.listen_ip}")
-    print(f"  Listen Port:  {args.listen_port}")
+    print(f"  Listen Address: {args.listen_ip}:{args.listen_port}")
 
     # Compare final_doh_providers to DEFAULT_DOH_PROVIDERS to decide whether to display [DEFAULT LIST] label
-    if sorted(final_doh_providers) == sorted(DEFAULT_DOH_PROVIDERS):
-        print(f"  DoH Providers:        [DEFAULT LIST]")
-    else:
-        print(f"  DoH Providers:        [CUSTOM LIST]")
+    is_default_list = sorted(final_doh_providers) == sorted(DEFAULT_DOH_PROVIDERS)
+    print(f"  DoH Providers:  {'[DEFAULT LIST]' if is_default_list else '[CUSTOM LIST]'}")
     # List all the providers that will be used
     for provider in final_doh_providers:
-        print(f"\t\t{provider}")
+        print(f"\t\t- {provider}")
 
     print(f"  Randomize:    {args.randomize}")
     print("-" * 60)
+    print(f"  Blocking Mode:  {'ENABLED' if args.block else 'DISABLED'}")
+    if args.block:
+        print(f"  Redirect IP:    {args.redirect_ip}")
+    print(f"  Log Level:      {logging.getLevelName(log_level)}")
+    print("-" * 60)
+
+    logger.info("Configuration parsed. Instantiating server.")
 
 
     # Instantiate and start the server, passing the arguments
@@ -161,18 +217,33 @@ def main():
         server = DNSProxyServer(
             listen_ip=args.listen_ip,
             listen_port=args.listen_port,
-            log_level= log_level,
             doh_providers=final_doh_providers,
-            randomize=args.randomize
+            randomize=args.randomize,
+            block_malicious=args.block,
+            redirect_ip=args.redirect_ip,
+            log_level=log_level
         )
+        logger.info("Server instantiated. Starting listeners...")
         server.start() # This will block until shutdown
 
-    except Exception as e:
-        # Use logger if implemented, otherwise print
-        print(f"An error occurred: {e}", file=sys.stderr)
-        # logger.exception("An unhandled error occurred during server startup or runtime.")
-        sys.exit(1) # Exit with error code
 
+    except PermissionError:
+        logger.critical(
+            f"Permission denied binding to {args.listen_ip}:{args.listen_port}. Try running as root/admin or using a port > 1024.")
+        sys.exit(f"PermissionError: Could not bind to port {args.listen_port}.")
+    except OSError as e:
+        if "address already in use" in str(e).lower():
+            logger.critical(
+                f"Address {args.listen_ip}:{args.listen_port} is already in use. Is another DNS server running?")
+            sys.exit(f"OSError: Address already in use ({args.listen_port}).")
+        else:
+            logger.critical(f"An OS error occurred during server startup: {e}", exc_info=True)
+            sys.exit(f"OSError: {e}")
+    except Exception as e:
+        logger.critical(f"An unexpected error occurred: {e}", exc_info=True)
+        sys.exit(f"Unexpected error: {e}")
+    finally:
+        logger.info("main.py finished.")
 
 
 if __name__ == "__main__":
