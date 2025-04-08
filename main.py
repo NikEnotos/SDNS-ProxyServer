@@ -126,18 +126,28 @@ def main():
         action='store_true', # Makes it a boolean flag, True if present
         help="Randomize the DoH provider selection for each request."
     )
+    # parser.add_argument(
+    #     '-b', '--block',
+    #     action='store_true', # Makes it a boolean flag, True if present
+    #     help="Enable or disable malicious/suspicious domain checking and blocking."
+    # )
     parser.add_argument(
-        '-b', '--block',
-        action='store_true', # Makes it a boolean flag, True if present
-        help="Enable or disable malicious/suspicious domain checking and blocking."
+        '-c', '--checker-service',
+        choices=['virustotal', 'ismalicious', 'both'], # Valid explicit choices
+        nargs='?', # Makes the argument optional
+        const='both', # Value if flag is present but without a value (e.g., --checker-service)
+        default=None, # Value if the flag is not present at all
+        metavar='SERVICE',
+        help="Enable domain checking and select service(s). If flag is present without a value, uses 'both'. "
+             "Choices: 'virustotal', 'ismalicious', 'both'. If flag is omitted, checking is DISABLED."
     )
     parser.add_argument(
         '--redirect-ip',
-        default="0.0.0.0", # Common IP for NXDOMAIN-like blocking
-        type=validate_ip_address, # Validate the IP format
+        default=None,
+        type=validate_ip_address,
         metavar='IP',
-        help="IPv4 or IPv6 address to return for blocked domains. "
-             "'0.0.0.0' results by default in a failed lookup for the client."
+        help="IPv4 or IPv6 address to return for blocked domains (used only if -c/--checker-service is enabled)."
+             "By default set to None and do not perform redirection."
     )
     parser.add_argument(
         '-v', '--verbose',
@@ -192,21 +202,24 @@ def main():
 
     print("-" * 60)
     print("Starting DNS Proxy Server with the following settings:")
-    print(f"  Listen Address: {args.listen_ip}:{args.listen_port}")
+    print(f"  Listen Address:  {args.listen_ip}:{args.listen_port}")
 
     # Compare final_doh_providers to DEFAULT_DOH_PROVIDERS to decide whether to display [DEFAULT LIST] label
     is_default_list = sorted(final_doh_providers) == sorted(DEFAULT_DOH_PROVIDERS)
-    print(f"  DoH Providers:  {'[DEFAULT LIST]' if is_default_list else '[CUSTOM LIST]'}")
+    print(f"  DoH Providers:   {'[DEFAULT LIST]' if is_default_list else '[CUSTOM LIST]'}")
     # List all the providers that will be used
     for provider in final_doh_providers:
-        print(f"\t\t- {provider}")
+        print(f"\t\t - {provider}")
 
-    print(f"  Randomization:  {"ENABLED" if args.randomize else "DISABLED"}")
+    print(f"  Randomization:   {"ENABLED" if args.randomize else "DISABLED"}")
     print("-" * 60)
-    print(f"  Blocking Mode:  {'ENABLED' if args.block else 'DISABLED'}")
-    if args.block:
-        print(f"  Redirect IP:    {args.redirect_ip}")
-    print(f"  Log Level:      {logging.getLevelName(log_level)}")
+    if args.checker_service:
+        print(f"  Blocking Mode:   ENABLED")
+        print(f"  Checker Service: {args.checker_service.upper()}")
+        print(f"  Redirect IP:     {args.redirect_ip if args.redirect_ip else "Redirection is DISABLED"}")
+    else:
+        print(f"  Blocking Mode:   DISABLED")
+    print(f"  Log Level:       {logging.getLevelName(log_level)}")
     print("-" * 60)
 
     logger.info("Configuration parsed. Instantiating server.")
@@ -219,7 +232,7 @@ def main():
             listen_port=args.listen_port,
             doh_providers=final_doh_providers,
             randomize=args.randomize,
-            block_malicious=args.block,
+            checker_service=args.checker_service,
             redirect_ip=args.redirect_ip,
             log_level=log_level
         )

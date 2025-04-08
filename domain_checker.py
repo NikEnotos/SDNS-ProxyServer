@@ -30,17 +30,21 @@ class DomainChecker:
         lock (threading.Lock): Lock to ensure thread-safe updates to scores.
     """
 
-    def __init__(self, domain: str):
+    def __init__(self, domain: str, service: str = 'both'):
         """
-        Initializes the DomainChecker for a specific domain.
+        Initializes the DomainChecker for a specific domain and service choice.
 
         Args:
             domain: The domain name to check.
+            service: Which service(s) to use ('virustotal', 'ismalicious', 'both').
         """
         if not isinstance(domain, str) or not domain:
             raise ValueError("A valid domain string must be provided.")
+        if service not in ['virustotal', 'ismalicious', 'both']:
+            raise ValueError("Service must be 'virustotal', 'ismalicious', or 'both'.")
 
         self.domain = domain
+        self.service = service
         self.vt_malicious = 0
         self.vt_suspicious = 0
         self.im_malicious = 0
@@ -163,16 +167,26 @@ class DomainChecker:
                 self.vt_suspicious = suspicious_count
 
     def start_checks(self):
-        """Starts the VirusTotal and IsMalicious checks in separate threads."""
-        if not self._vt_thread:
+        """
+        Starts the configured checks (VirusTotal, IsMalicious, or both)
+        in separate threads based on the service chosen during initialization.
+        """
+        start_vt = self.service in ['virustotal', 'both']
+        start_im = self.service in ['ismalicious', 'both']
+
+        if start_vt and not self._vt_thread:
             self._vt_thread = threading.Thread(target=self._check_domain_virustotal_thread, daemon=True)
             self._vt_thread.start()
             self.logger.debug(f"Started VirusTotal check thread for {self.domain}")
+        elif not start_vt:
+            self.logger.debug(f"Skipping VirusTotal check for [{self.domain}] due to the configuration ({self.service})")
 
-        if not self._im_thread:
+        if start_im and not self._im_thread:
             self._im_thread = threading.Thread(target=self._check_domain_ismalicious_thread, daemon=True)
             self._im_thread.start()
             self.logger.debug(f"Started IsMalicious check thread for {self.domain}")
+        elif not start_im:
+            self.logger.debug(f"Skipping IsMalicious check for [{self.domain}] due to the configuration ({self.service})")
 
     def wait_for_completion(self, timeout: Optional[float] = 5.0):
         """

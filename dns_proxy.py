@@ -19,8 +19,8 @@ from domain_checker import DomainChecker
 
 class DNSProxyServer:
     def __init__(self, listen_ip: str = '0.0.0.0', listen_port: int = 53, doh_providers: list[str] = None,
-                 randomize: bool = False, block_malicious: bool = False, block_threshold_malicious: int = 1,
-                 block_threshold_suspicious: int = 1, redirect_ip: str = "0.0.0.0", log_level: logging = logging.ERROR):
+                 randomize: bool = False, checker_service: Optional[str] = None, block_threshold_malicious: int = 1,
+                 block_threshold_suspicious: int = 1, redirect_ip: str = None, log_level: logging = logging.ERROR):
         """
         Initialize the DNS proxy server with given or default parameters.
         
@@ -29,7 +29,7 @@ class DNSProxyServer:
             listen_port: Port to listen on (default: 53 - standard DNS port)
             doh_providers: A list of DNS over HTTPS URLs to use. (default: Cloudflare's 1.1.1.1)
             randomize: If True, pick a random DoH provider for each query.
-            block_malicious: If True, check domains and block/redirect malicious/suspicious ones.
+            checker_service: If specified, perform domains checks and block malicious/suspicious ones using the specified domain-checker service.
             block_threshold_malicious: The acceptable maliciousness score at which a domain is not yet blocked (default: 1)
             block_threshold_suspicious: The acceptable suspiciousness score at which a domain is not yet blocked (default: 1)
             redirect_ip: IP address to return for blocked domains.  # TODO IMPLEMENT
@@ -42,7 +42,7 @@ class DNSProxyServer:
         self.doh_providers = doh_providers if doh_providers else ['https://1.1.1.1/dns-query']
         self.randomize = randomize
 
-        self.block_malicious = block_malicious
+        self.checker_service = checker_service
         self.block_threshold_malicious = block_threshold_malicious
         self.block_threshold_suspicious = block_threshold_suspicious
         self.redirect_ip = redirect_ip
@@ -78,11 +78,14 @@ class DNSProxyServer:
             self._tcp_thread.start()
             self.logger.info(f"TCP DNS proxy listening on {self.listen_ip}:{self.listen_port}")
 
-            self.logger.info(f"Malicious domain blocking is : { "enabled" if self.block_malicious else "NOT enabled" }")
-            if self.block_malicious:
-                self.logger.info(f"Redirecting blocked domains to: {self.redirect_ip}")  # TODO: Implement in a different way
+            self.logger.info(f"Malicious domain blocking is : {"enabled" if self.checker_service else "disabled"}")
+            if self.checker_service:
+                if self.redirect_ip:
+                    self.logger.info(f"Redirecting blocked domains to: {self.redirect_ip}")
+                else:
+                    self.logger.info(f"Redirection for blocked domains is DISABLED")
 
-            self.logger.info("-"*50)
+            self.logger.info("-" * 50)
 
             # Keep the main thread alive
             while not self.shutdown_event.is_set():
@@ -90,7 +93,7 @@ class DNSProxyServer:
                 time.sleep(0.5)
 
             # Keep the main thread alive using the event's wait method
-            #self.shutdown_event.wait()  # Wait until shutdown_event is set
+            # self.shutdown_event.wait()  # Wait until shutdown_event is set
 
         except KeyboardInterrupt:
             print("\nCtrl+C detected. Shutting down DNS proxy server...")
@@ -98,7 +101,7 @@ class DNSProxyServer:
             self.logger.error(f"Server startup error: {e}", exc_info=True)
         finally:
             # Signal threads to stop
-            #self.shutdown_event.set()
+            # self.shutdown_event.set()
             self.shutdown()
 
     def shutdown(self):
@@ -262,9 +265,8 @@ class DNSProxyServer:
                 for question in request.question:
                     domain_to_check = question.name.to_text(omit_final_dot=True)
                     qtype = dns.rdatatype.to_text(question.rdtype)
-                    self.logger.info(f"[>] Received (TCP) DNS request from \t{str(addr):<25} for [{domain_to_check}] (Type: {qtype})")
-
-
+                    self.logger.info(
+                        f"[>] Received (TCP) DNS request from \t{str(addr):<25} for [{domain_to_check}] (Type: {qtype})")
 
                 # ----- Prepare for the concurrent operations -----
                 # Initialize variables to use threads and store results of concurrent operations
@@ -274,22 +276,21 @@ class DNSProxyServer:
                 # Use a list to hold the result from the DoH thread as it is mutable
                 doh_result: List[Optional[bytes]] = [None]
 
-
-
                 # ----- Start the concurrent checks -----
-                if self.block_malicious and domain_to_check:
-                    if domain_to_check != "ismalicious.com" and domain_to_check != "www.virustotal.com": # Prevent checking domain validators
+                if self.checker_service is not None and domain_to_check:
+                    if domain_to_check != "ismalicious.com" and domain_to_check != "www.virustotal.com":  # Prevent checking domain validators
                         check_wait_start = time.monotonic()  # TODO remove
-                        domain_checker = DomainChecker(domain_to_check)
+                        domain_checker = DomainChecker(domain_to_check, service=self.checker_service)
                         domain_checker.start_checks()
                         self.logger.debug(f"Started domain checks for {domain_to_check} (TCP)")
 
                 # Define the target function for the DoH thread
                 def doh_worker():
                     try:
-                        doh_result[0] = self._forward_to_doh(data) # Store result in mutable list
+                        doh_result[0] = self._forward_to_doh(data)  # Store result in mutable list
                     except Exception as e_doh:
-                        self.logger.error(f"Exception in DoH worker thread for {domain_to_check} (TCP): {e_doh}",exc_info=True)
+                        self.logger.error(f"Exception in DoH worker thread for {domain_to_check} (TCP): {e_doh}",
+                                          exc_info=True)
                         doh_result[0] = None
 
                 # Start DoH request in its own thread
@@ -297,8 +298,6 @@ class DNSProxyServer:
                 doh_wait_start = time.monotonic()  # TODO remove
                 doh_thread = (threading.Thread(target=doh_worker, daemon=True))
                 doh_thread.start()
-
-
 
                 # ----- Wait for results of the concurrent checks -----
                 # Wait for DoH request thread
@@ -311,18 +310,16 @@ class DNSProxyServer:
 
                 # Wait for domain checks (if started)
                 if domain_checker:
-                    domain_checker.wait_for_completion(timeout=3.0)
+                    domain_checker.wait_for_completion(timeout=4.0)
                     self.logger.debug(
                         f"Domain checks (TCP) for \t[{domain_to_check}] finished or timed out in {time.monotonic() - check_wait_start:.2f}s")  # TODO remove time tracking
-
-
 
                 # ----- Process the results -----
                 final_response: Optional[bytes] = None
 
                 # Check domain status if blocking enabled and checks were run
                 is_bad_domain = False
-                if self.block_malicious and domain_checker:
+                if self.checker_service is not None and domain_checker:
                     if domain_checker.is_malicious(self.block_threshold_malicious):
                         self.logger.warning(
                             f"[!!!] MALICIOUS domain blocked (TCP): [{domain_to_check}]")  # TODO: Think about adding score display
@@ -342,7 +339,8 @@ class DNSProxyServer:
                             response_msg = dns.message.from_wire(response_data)
                             rcode_text = dns.rcode.to_text(response_msg.rcode())
                             answer_count = len(response_msg.answer)
-                            self.logger.info(f"[+] DoH Response for \t\t[{domain_to_check}]: \t{rcode_text}, {answer_count} answers")
+                            self.logger.info(
+                                f"[+] DoH Response for \t\t[{domain_to_check}]: \t{rcode_text}, {answer_count} answers")
 
                             # Log every IPv4 and IPv6 addresses in the response
                             for answer in response_msg.answer:
@@ -367,8 +365,6 @@ class DNSProxyServer:
                     # TODO: redirection logic here, SERVFAIL for now
                     final_response = self._create_error_response(data, dns.rcode.SERVFAIL)
 
-
-
                 # ----- Send parsed results as a response -----
                 if final_response:
                     # Prepend 2-byte length for TCP response
@@ -381,7 +377,8 @@ class DNSProxyServer:
                             f"Failed to send TCP response to {addr}: {send_err}. Client might have closed connection.")
                 else:
                     # This means even SERVFAIL failed to generate
-                    self.logger.error(f"No final response generated for TCP request from {addr} for {domain_to_check}. Closing connection.")
+                    self.logger.error(
+                        f"No final response generated for TCP request from {addr} for {domain_to_check}. Closing connection.")
 
             else:
                 self.logger.info(f"Received non-DNS TCP message from {addr}, ignoring and closing.")
@@ -464,8 +461,6 @@ class DNSProxyServer:
                         self.logger.warning(f"Socket error sending FORMERR to {addr}: {send_err}")
                 return
 
-
-
             # ----- Prepare for the concurrent operations -----
             # Initialize variables to use threads and store results of concurrent operations
             domain_checker: Optional[DomainChecker] = None
@@ -474,60 +469,57 @@ class DNSProxyServer:
             # Use a list to hold the result from the DoH thread as it is mutable
             doh_result: List[Optional[bytes]] = [None]
 
-
-
             # ----- Start the concurrent checks -----
-            if self.block_malicious and domain_to_check:
+            if self.checker_service is not None and domain_to_check:
                 if domain_to_check != "ismalicious.com" and domain_to_check != "www.virustotal.com":  # Prevent checking domain validators
-                    check_wait_start = time.monotonic() # TODO remove
-                    domain_checker = DomainChecker(domain_to_check)
+                    check_wait_start = time.monotonic()  # TODO remove
+                    domain_checker = DomainChecker(domain_to_check, service=self.checker_service)
                     domain_checker.start_checks()
                     self.logger.debug(f"Started domain checks for {domain_to_check} (UDP)")
 
             # Define the target function for the DoH thread
             def doh_worker():
                 try:
-                    doh_result[0] = self._forward_to_doh(data) # Store result in mutable list
+                    doh_result[0] = self._forward_to_doh(data)  # Store result in mutable list
                 except Exception as e_doh:
-                    self.logger.error(f"Exception in DoH worker thread for {domain_to_check} (UDP): {e_doh}", exc_info=True)
+                    self.logger.error(f"Exception in DoH worker thread for {domain_to_check} (UDP): {e_doh}",
+                                      exc_info=True)
                     doh_result[0] = None
 
             # Start DoH request in its own thread
             self.logger.debug(f"Started DoH forwarding thread for {domain_to_check} (UDP)")
-            doh_wait_start = time.monotonic() # TODO remove
+            doh_wait_start = time.monotonic()  # TODO remove
             doh_thread = threading.Thread(target=doh_worker, daemon=True)
             doh_thread.start()
-
-
 
             # ----- Wait for results of the concurrent checks -----
             # Wait for DoH request thread
             if doh_thread:
                 doh_thread.join(timeout=6.0)
                 self.logger.debug(
-                    f"DoH (UDP) thread for \t[{domain_to_check}] (UDP) finished or timed out in {time.monotonic() - doh_wait_start:.2f}s") # TODO remove time tracking
+                    f"DoH (UDP) thread for \t[{domain_to_check}] (UDP) finished or timed out in {time.monotonic() - doh_wait_start:.2f}s")  # TODO remove time tracking
                 if doh_thread.is_alive():
                     self.logger.warning(f"DoH (UDP) thread for \t[{domain_to_check}] timed out.")
 
             # Wait for domain checks (if started)
             if domain_checker:
-                domain_checker.wait_for_completion(timeout=3.0)
+                domain_checker.wait_for_completion(timeout=4.0)
                 self.logger.debug(
-                    f"Domain checks (UDP) for \t[{domain_to_check}] finished or timed out in {time.monotonic() - check_wait_start:.2f}s") # TODO remove time tracking
-
-
+                    f"Domain checks (UDP) for \t[{domain_to_check}] finished or timed out in {time.monotonic() - check_wait_start:.2f}s")  # TODO remove time tracking
 
             # ----- Process the results -----
             final_response: Optional[bytes] = None
 
             # Check domain status if blocking enabled and checks were run
             is_bad_domain = False
-            if self.block_malicious and domain_checker:
+            if self.checker_service is not None and domain_checker:
                 if domain_checker.is_malicious(self.block_threshold_malicious):
-                    self.logger.warning(f"[!!!] MALICIOUS domain blocked (UDP): [{domain_to_check}]")   # TODO: Think about adding score display
+                    self.logger.warning(
+                        f"[!!!] MALICIOUS domain blocked (UDP): [{domain_to_check}]")  # TODO: Think about adding score display
                     is_bad_domain = True
                 elif domain_checker.is_suspicious(self.block_threshold_suspicious):
-                    self.logger.warning(f"[!] SUSPICIOUS domain blocked (UDP): [{domain_to_check}]")    # TODO: Think about adding score display
+                    self.logger.warning(
+                        f"[!] SUSPICIOUS domain blocked (UDP): [{domain_to_check}]")  # TODO: Think about adding score display
                     is_bad_domain = True
 
             # If domain is not bad, use DoH result
@@ -540,7 +532,8 @@ class DNSProxyServer:
                         response_msg = dns.message.from_wire(response_data)
                         rcode_text = dns.rcode.to_text(response_msg.rcode())
                         answer_count = len(response_msg.answer)
-                        self.logger.info(f"[+] DoH Response for \t\t[{domain_to_check}]: \t{rcode_text}, {answer_count} answers")
+                        self.logger.info(
+                            f"[+] DoH Response for \t\t[{domain_to_check}]: \t{rcode_text}, {answer_count} answers")
 
                         # Log every IPv4 and IPv6 addresses in the response
                         for answer in response_msg.answer:
@@ -565,8 +558,6 @@ class DNSProxyServer:
                 # TODO: redirection logic here, SERVFAIL for now
                 final_response = self._create_error_response(data, dns.rcode.SERVFAIL)
 
-
-
             # ----- Send parsed results as a response -----
             if final_response:
                 try:
@@ -574,10 +565,12 @@ class DNSProxyServer:
                     self.logger.debug(f"[<] Sent UDP response ({len(final_response)} bytes) to {addr}")
                 except (socket.error, OSError) as send_err:
                     # This can happen if the client closes the "connection" before response arrives
-                    self.logger.warning(f"Failed to send UDP response to {addr}: {send_err}. Client might have timed out or disconnected.")
+                    self.logger.warning(
+                        f"Failed to send UDP response to {addr}: {send_err}. Client might have timed out or disconnected.")
             else:
                 # This means even SERVFAIL failed to generate
-                self.logger.error(f"No final response generated for UDP request from {addr} for {domain_to_check}. No response sent.")
+                self.logger.error(
+                    f"No final response generated for UDP request from {addr} for {domain_to_check}. No response sent.")
 
 
         except dns.exception.DNSException as e:
@@ -599,53 +592,6 @@ class DNSProxyServer:
                 except socket.error as send_err:
                     self.logger.warning(f"Socket error sending fallback SERVFAIL to {addr}: {send_err}")
 
-    # TODO DELETE OR USE FOR REFACTORING
-    def _process_dns_request(self, dns_data: bytes) -> Optional[bytes]:
-        """
-        Process a DNS request by forwarding it to DoH and returning the response.
-        
-        Args:
-            dns_data: The raw DNS request data
-            
-        Returns:
-            bytes: The DNS response data, or None if an error occurred
-        """
-        try:
-            # Forward to DoH
-            response_data = self._forward_to_doh(dns_data)
-
-            if response_data:
-                # Parse the response to log it
-                response = dns.message.from_wire(response_data)
-                rcode_text = dns.rcode.to_text(response.rcode())
-                answer_count = len(response.answer)
-                self.logger.info(f"[+] DoH Response: {rcode_text}, {answer_count} answers")
-
-                requested_domain = "No 'question' in response"
-                if response.question:
-                    requested_domain = response.question[0].name.to_text()
-
-                for answer in response.answer:
-                    # Loop through each resource record in the answer.
-                    for record in answer:
-                        # Check if the record is an A record (IPv4 address).
-                        if record.rdtype == dns.rdatatype.A:
-                            self.logger.info(f"  ↳ IPv4: {record.address:<15}\t\t[{requested_domain}]")
-
-
-                        elif record.rdtype == dns.rdatatype.AAAA:
-                            self.logger.info(f"  ↳ IPv6: {record.address:<39}\t\t[{requested_domain}]")
-
-                # TODO: add IP addresses check hare
-                return response_data
-            else:
-                # If DoH failed, create a SERVFAIL response
-                self.logger.error(f"DoH getting failed. Creating a SERVFAIL response")
-                return self._create_error_response(dns_data, dns.rcode.SERVFAIL)
-
-        except Exception as e:
-            self.logger.error(f"Error processing DNS request: {e}")
-            return self._create_error_response(dns_data, dns.rcode.SERVFAIL)
 
     def _create_error_response(self, original_request_data: bytes, rcode: dns.rcode.Rcode) -> Optional[bytes]:
         """ Helper to create a DNS error response (e.g., SERVFAIL, REFUSED). """
@@ -672,8 +618,8 @@ class DNSProxyServer:
             self.logger.error(f"Failed to create error response with rcode {rcode}: {e}", exc_info=True)
             return None  # Fallback
 
-
-    def _create_redirection_response(self, original_request_data: bytes, redirect_ip: str = "127.0.0.1") -> Optional[bytes]:
+    def _create_redirection_response(self, original_request_data: bytes, redirect_ip: str = "127.0.0.1") -> Optional[
+        bytes]:
         """
         Creates a DNS response with a safe IP address for redirection.
         Only creates A or AAAA records based on the redirect_ip format.
@@ -732,7 +678,8 @@ class DNSProxyServer:
             response.answer.append(rrset)
 
             domain_text = qname.to_text(omit_final_dot=True)
-            self.logger.info(f"  ↳ [REDIRECTION] {domain_text} -> {redirect_ip} (Type: {dns.rdatatype.to_text(target_rdtype)})")
+            self.logger.info(
+                f"  ↳ [REDIRECTION] {domain_text} -> {redirect_ip} (Type: {dns.rdatatype.to_text(target_rdtype)})")
 
             # Return the crafted response in wire format
             return response.to_wire()
@@ -748,10 +695,10 @@ class DNSProxyServer:
                 domain_str = dns.message.from_wire(original_request_data).question[0].name.to_text()
             except:
                 pass
-            self.logger.error(f"Unexpected error creating redirection response for {domain_str}: {e_redir}", exc_info=True)
+            self.logger.error(f"Unexpected error creating redirection response for {domain_str}: {e_redir}",
+                              exc_info=True)
             # Fallback to SERVFAIL if redirection crafting fails
             return self._create_error_response(original_request_data, dns.rcode.SERVFAIL)
-
 
     def _get_doh_url(self) -> str:
         """Selects a DoH URL based on the randomization setting."""
@@ -759,7 +706,8 @@ class DNSProxyServer:
             return random.choice(self.doh_providers)
         elif self.doh_providers:  # Make sure list is not empty
             # Default to the first provider if not randomizing or only one provider
-            return self.doh_providers[0]    # TODO: implement logic of getting providers one by one if there are more than one
+            return self.doh_providers[
+                0]  # TODO: implement logic of getting providers one by one if there are more than one
         else:
             # Fallback needed if the list could be empty (shouldn't happen with argparse default)
             self.logger.critical("CRITICAL: No DoH providers configured! Falling back to default.")
@@ -805,7 +753,8 @@ class DNSProxyServer:
 
             # Check for successful response
             if response.status_code == 200 and response.headers.get('content-type') == 'application/dns-message':
-                self.logger.debug(f"\t[⩗] DoH POST successful for \t[${domain_name}] \t({len(response.content)} bytes).")
+                self.logger.debug(
+                    f"\t[⩗] DoH POST successful for \t[${domain_name}] \t({len(response.content)} bytes).")
                 return response.content
             else:
                 self.logger.error(
@@ -831,7 +780,7 @@ class DNSProxyServer:
             request = dns.message.from_wire(dns_data)
             if request.question:
                 qname = request.question[0].name.to_text()
-                #qtype = dns.rdatatype.to_text(request.question[0].rdtype) # String type
+                # qtype = dns.rdatatype.to_text(request.question[0].rdtype) # String type
                 qtype_int = request.question[0].rdtype  # Integer type
 
                 # Use JSON API
@@ -841,7 +790,7 @@ class DNSProxyServer:
                     json_url,
                     params={
                         'name': qname,
-                        #'type': qtype
+                        # 'type': qtype
                         'type': str(qtype_int)
                     },
                     headers={'Accept': 'application/dns-json'},
@@ -880,7 +829,8 @@ class DNSProxyServer:
             self.logger.error(f"Unexpected error forwarding to DoH {selected_doh_url}: {e}", exc_info=True)
             return None
 
-    def _json_to_dns_response(self, json_data: Dict[str, Any], original_request: dns.message.Message) -> Optional[bytes]:
+    def _json_to_dns_response(self, json_data: Dict[str, Any], original_request: dns.message.Message) -> Optional[
+        bytes]:
         """
         Converts a DNS JSON response (RFC 8427 format) to DNS wire format.
 
@@ -895,12 +845,10 @@ class DNSProxyServer:
             # Create a response message based on the original request
             response = dns.message.make_response(original_request)
 
-
             # Clear sections that will be populated from JSON
             response.answer = []
             response.authority = []
             response.additional = []
-
 
             # Set response code
             status_code_int = json_data.get('Status', 0)  # Get integer status from JSON
@@ -912,7 +860,6 @@ class DNSProxyServer:
                 self.logger.error(f"Invalid RCODE value received in JSON: {status_code_int}. Using SERVFAIL.")
                 response.set_rcode(dns.rcode.SERVFAIL)
 
-
             # Set Flags from JSON
             # Ensure the QR bit is set (it should be by make_response)
             response.flags |= dns.flags.QR
@@ -920,7 +867,6 @@ class DNSProxyServer:
                 response.flags |= dns.flags.RA
             if json_data.get('AD', False):  # Authenticated Data
                 response.flags |= dns.flags.AD
-
 
             # Process Records(Answer, Authority)
             section_map = {
@@ -982,19 +928,18 @@ class DNSProxyServer:
             return None
 
 
-
 if __name__ == '__main__':
     print("Starting DNS Proxy Server directly (for testing)...")
     # Configure with some defaults for direct execution
     proxy = DNSProxyServer(
         log_level=logging.INFO,
-        block_malicious=True,
+        checker_service="virustotal",
         doh_providers=['https://1.1.1.1/dns-query']
     )
     try:
         proxy.start()
     except KeyboardInterrupt:
-         print("\nStopping server...")
-         proxy.shutdown()
+        print("\nStopping server...")
+        proxy.shutdown()
     except Exception as e:
-         logging.getLogger(__name__).error(f"Failed to run server directly: {e}", exc_info=True)
+        logging.getLogger(__name__).error(f"Failed to run server directly: {e}", exc_info=True)
