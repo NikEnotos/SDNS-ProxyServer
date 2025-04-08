@@ -82,6 +82,8 @@ class DNSProxyServer:
             if self.block_malicious:
                 self.logger.info(f"Redirecting blocked domains to: {self.redirect_ip}")  # TODO: Implement in a different way
 
+            self.logger.info("-"*50)
+
             # Keep the main thread alive
             while not self.shutdown_event.is_set():
                 # Sleep allows checking the event periodically and reduces CPU usage
@@ -151,7 +153,7 @@ class DNSProxyServer:
 
                 if self._is_dns_request(data):
                     # Spawn a new thread to handle the request concurrently
-                    threading.Thread(target=self._handle_dns_request, args=(data, addr, False)).start()
+                    threading.Thread(target=self._handle_dns_request, args=(data, addr)).start()
                 else:
                     self.logger.info(f"Received non-DNS UDP packet from {addr}, ignoring")
 
@@ -260,7 +262,7 @@ class DNSProxyServer:
                 for question in request.question:
                     domain_to_check = question.name.to_text(omit_final_dot=True)
                     qtype = dns.rdatatype.to_text(question.rdtype)
-                    self.logger.info(f"[+] Received TCP DNS request from \t{str(addr):<25} for [{domain_to_check}] (Type: {qtype})")
+                    self.logger.info(f"[>] Received (TCP) DNS request from \t{str(addr):<25} for [{domain_to_check}] (Type: {qtype})")
 
 
 
@@ -285,33 +287,34 @@ class DNSProxyServer:
                 # Define the target function for the DoH thread
                 def doh_worker():
                     try:
-                        response_data = self._forward_to_doh(data)
-                        doh_result[0] = response_data  # Store result in mutable list
+                        doh_result[0] = self._forward_to_doh(data)
+                        #doh_result[0] = response_data  # Store result in mutable list
                     except Exception as e_doh:
                         self.logger.error(f"Exception in DoH worker thread for {domain_to_check} (TCP): {e_doh}",exc_info=True)
                         doh_result[0] = None
 
                 # Start DoH request in its own thread
-                doh_wait_start = time.monotonic()  # TODO remove
-                doh_thread = threading.Thread(target=doh_worker, daemon=True).start()
                 self.logger.debug(f"Started DoH forwarding thread for {domain_to_check} (TCP)")
+                doh_wait_start = time.monotonic()  # TODO remove
+                doh_thread = (threading.Thread(target=doh_worker, daemon=True))
+                doh_thread.start()
 
 
 
                 # ----- Wait for results of the concurrent checks -----
                 # Wait for DoH request thread
                 if doh_thread:
-                    doh_thread.join(timeout=4.0)
+                    doh_thread.join(timeout=6.0)
                     self.logger.debug(
-                        f"DoH thread for {domain_to_check} (TCP) finished or timed out in {time.monotonic() - doh_wait_start:.2f}s")  # TODO remove time tracking
+                        f"DoH (TCP) thread for \t[{domain_to_check}] finished or timed out in {time.monotonic() - doh_wait_start:.2f}s")  # TODO remove time tracking
                     if doh_thread.is_alive():
-                        self.logger.warning(f"DoH thread for {domain_to_check} (TCP) timed out.")
+                        self.logger.warning(f"DoH (TCP) thread for \t[{domain_to_check}]  timed out.")
 
                 # Wait for domain checks (if started)
                 if domain_checker:
                     domain_checker.wait_for_completion(timeout=3.0)
                     self.logger.debug(
-                        f"Domain checks for {domain_to_check} (TCP) finished or timed out in {time.monotonic() - check_wait_start:.2f}s")  # TODO remove time tracking
+                        f"Domain checks (TCP) for \t[{domain_to_check}] finished or timed out in {time.monotonic() - check_wait_start:.2f}s")  # TODO remove time tracking
 
 
 
@@ -340,7 +343,7 @@ class DNSProxyServer:
                             response_msg = dns.message.from_wire(response_data)
                             rcode_text = dns.rcode.to_text(response_msg.rcode())
                             answer_count = len(response_msg.answer)
-                            self.logger.info(f"[+] DoH Response for [{domain_to_check}]: {rcode_text}, {answer_count} answers")
+                            self.logger.info(f"[+] DoH Response for \t\t[{domain_to_check}]: \t{rcode_text}, {answer_count} answers")
 
                             # Log every IPv4 and IPv6 addresses in the response
                             for answer in response_msg.answer:
@@ -373,7 +376,7 @@ class DNSProxyServer:
                     response_length_bytes = struct.pack('!H', len(final_response))
                     try:
                         client_sock.sendall(response_length_bytes + final_response)
-                        self.logger.debug(f"Sent TCP response ({len(final_response)} bytes) to {addr}")
+                        self.logger.debug(f"[<] Sent TCP response ({len(final_response)} bytes) to {addr}")
                     except socket.error as send_err:
                         self.logger.warning(
                             f"Failed to send TCP response to {addr}: {send_err}. Client might have closed connection.")
@@ -398,7 +401,7 @@ class DNSProxyServer:
             # Ensure the client socket is always closed
             try:
                 client_sock.close()
-                self.logger.debug(f"Closed TCP connection from {addr}")
+                self.logger.debug(f"[*] Closed TCP connection from {addr}")
             except Exception as close_err:
                 self.logger.error(f"Error closing TCP client socket for {addr}: {close_err}")
 
@@ -448,7 +451,7 @@ class DNSProxyServer:
                 domain_to_check = qname.to_text(omit_final_dot=True)
                 qtype = dns.rdatatype.to_text(request.question[0].rdtype)
                 self.logger.info(
-                    f"[+] Received UDP DNS request from \t{str(addr):<25} for [{domain_to_check}] (Type: {qtype})")
+                    f"[>] Received (UDP) DNS request from \t{str(addr):<25} for [{domain_to_check}] (Type: {qtype})")
             else:
                 # Should not happen if _is_dns_request passed, but handle defensively
                 self.logger.warning(f"Received DNS request from {addr} with no questions.")
@@ -492,26 +495,27 @@ class DNSProxyServer:
                     doh_result[0] = None
 
             # Start DoH request in its own thread
-            doh_wait_start = time.monotonic() # TODO remove
-            doh_thread = threading.Thread(target=doh_worker, daemon=True).start()
             self.logger.debug(f"Started DoH forwarding thread for {domain_to_check} (UDP)")
+            doh_wait_start = time.monotonic() # TODO remove
+            doh_thread = threading.Thread(target=doh_worker, daemon=True)
+            doh_thread.start()
 
 
 
             # ----- Wait for results of the concurrent checks -----
             # Wait for DoH request thread
             if doh_thread:
-                doh_thread.join(timeout=4.0)
+                doh_thread.join(timeout=6.0)
                 self.logger.debug(
-                    f"DoH thread for {domain_to_check} (UDP) finished or timed out in {time.monotonic() - doh_wait_start:.2f}s") # TODO remove time tracking
+                    f"DoH (UDP) thread for \t[{domain_to_check}] (UDP) finished or timed out in {time.monotonic() - doh_wait_start:.2f}s") # TODO remove time tracking
                 if doh_thread.is_alive():
-                    self.logger.warning(f"DoH thread for {domain_to_check} (UDP) timed out.")
+                    self.logger.warning(f"DoH (UDP) thread for \t[{domain_to_check}] timed out.")
 
             # Wait for domain checks (if started)
             if domain_checker:
                 domain_checker.wait_for_completion(timeout=3.0)
                 self.logger.debug(
-                    f"Domain checks for {domain_to_check} (UDP) finished or timed out in {time.monotonic() - check_wait_start:.2f}s") # TODO remove time tracking
+                    f"Domain checks (UDP) for \t[{domain_to_check}] finished or timed out in {time.monotonic() - check_wait_start:.2f}s") # TODO remove time tracking
 
 
 
@@ -538,7 +542,7 @@ class DNSProxyServer:
                         response_msg = dns.message.from_wire(response_data)
                         rcode_text = dns.rcode.to_text(response_msg.rcode())
                         answer_count = len(response_msg.answer)
-                        self.logger.info(f"[+] DoH Response for [{domain_to_check}]: {rcode_text}, {answer_count} answers")
+                        self.logger.info(f"[+] DoH Response for \t\t[{domain_to_check}]: \t{rcode_text}, {answer_count} answers")
 
                         # Log every IPv4 and IPv6 addresses in the response
                         for answer in response_msg.answer:
@@ -569,7 +573,7 @@ class DNSProxyServer:
             if final_response:
                 try:
                     self.udp_socket.sendto(final_response, addr)
-                    self.logger.debug(f"Sent UDP response ({len(final_response)} bytes) to {addr}")
+                    self.logger.debug(f"[<] Sent UDP response ({len(final_response)} bytes) to {addr}")
                 except (socket.error, OSError) as send_err:
                     # This can happen if the client closes the "connection" before response arrives
                     self.logger.warning(f"Failed to send UDP response to {addr}: {send_err}. Client might have timed out or disconnected.")
@@ -597,7 +601,8 @@ class DNSProxyServer:
                 except socket.error as send_err:
                     self.logger.warning(f"Socket error sending fallback SERVFAIL to {addr}: {send_err}")
 
-    def _process_dns_request(self, dns_data: bytes) -> Optional[bytes]:     # TODO DELETE OR USE FOR REFACTORING
+    # TODO DELETE OR USE FOR REFACTORING
+    def _process_dns_request(self, dns_data: bytes) -> Optional[bytes]:
         """
         Process a DNS request by forwarding it to DoH and returning the response.
         
@@ -773,12 +778,15 @@ class DNSProxyServer:
             bytes: The DNS response data from the DoH server, or None if an error occurred
         """
 
+        request = dns.message.from_wire(dns_data)
+        domain_name = request.question[0].name.to_text()
+
         # Select the DoH URL for this specific request
         selected_doh_url = self._get_doh_url()
-        self.logger.debug(f"Forwarding query to DoH provider: {selected_doh_url}")  # Log which one is used
+        self.logger.debug(f"\tForwarding query to DoH provider: {selected_doh_url}")  # Log which one is used
 
         # Define timeout for requests
-        request_timeout = 5.0  # seconds
+        request_timeout = 2.0  # seconds
 
         try:
             # Base64 encode the DNS request for DoH
@@ -799,11 +807,11 @@ class DNSProxyServer:
 
             # Check for successful response
             if response.status_code == 200 and response.headers.get('content-type') == 'application/dns-message':
-                self.logger.debug(f"DoH POST successful ({len(response.content)} bytes).")
+                self.logger.debug(f"\t[⩗] DoH POST successful for \t[${domain_name}] \t({len(response.content)} bytes).")
                 return response.content
             else:
                 self.logger.error(
-                    f"POST DoH request to [{selected_doh_url}] failed (Status: {response.status_code}), trying GET method as fallback.")
+                    f"\t[-] POST DoH request to {selected_doh_url} for \t[${domain_name}] failed (Status: {response.status_code}), trying GET method as fallback.")
 
             # Method 2: Fall back to GET with dns parameter if POST fails
             response = requests.get(
@@ -814,11 +822,11 @@ class DNSProxyServer:
             )
 
             if response.status_code == 200 and response.headers.get('content-type') == 'application/dns-message':
-                self.logger.debug(f"DoH GET successful ({len(response.content)} bytes).")
+                self.logger.debug(f"\t[⩗] DoH GET successful ({len(response.content)} bytes).")
                 return response.content
             else:
                 self.logger.error(
-                    f"GET DoH request to [{selected_doh_url}] failed (Status: {response.status_code}), trying JSON method as the last resort.")
+                    f"\t[-] GET DoH request to {selected_doh_url} failed (Status: {response.status_code}), trying JSON method as the last resort.")
 
             # Method 3: Try JSON format as a last resort
             # Parse the DNS request to get the query details
@@ -844,7 +852,7 @@ class DNSProxyServer:
 
                 if response.status_code == 200 and 'application/dns-json' in response.headers.get('content-type', ''):
                     # Convert JSON response back to DNS wire format
-                    self.logger.warning(f"DoH request to [{selected_doh_url}] succeeded using JSON fallback.")
+                    self.logger.warning(f"\t[⩗] DoH request to {selected_doh_url} succeeded using JSON fallback.")
                     json_response_data = response.json()
                     # Convert JSON back to wire format based on original request
                     wire_response = self._json_to_dns_response(json_response_data, request)
@@ -857,7 +865,7 @@ class DNSProxyServer:
                         # Fall through to general failure case
 
                     # If all methods failed
-                self.logger.error(f"All DoH methods (POST, GET, JSON) failed for [{selected_doh_url}].")
+                self.logger.error(f"\t[-] All DoH methods (POST, GET, JSON) failed for [{selected_doh_url}].")
                 return None
 
         except requests.exceptions.Timeout:
@@ -874,8 +882,7 @@ class DNSProxyServer:
             self.logger.error(f"Unexpected error forwarding to DoH {selected_doh_url}: {e}", exc_info=True)
             return None
 
-    def _json_to_dns_response(self, json_data: Dict[str, Any], original_request: dns.message.Message) -> Optional[
-        bytes]:
+    def _json_to_dns_response(self, json_data: Dict[str, Any], original_request: dns.message.Message) -> Optional[bytes]:
         """
         Converts a DNS JSON response (RFC 8427 format) to DNS wire format.
 
@@ -917,12 +924,10 @@ class DNSProxyServer:
                 response.flags |= dns.flags.AD
 
 
-            # TODO: TEST IF WORKS ----------------------------------------------
-            # Process Records(Answer, Authority, Additional sections)
+            # Process Records(Answer, Authority)
             section_map = {
                 'Answer': response.answer,
-                'Authority': response.authority,
-                'Additional': response.additional
+                'Authority': response.authority
             }
 
             for section_name, response_section_list in section_map.items():
@@ -979,90 +984,14 @@ class DNSProxyServer:
             return None
 
 
-            # TODO: TEST IF WORKS ----------------------------------------------
-            # # Process Answer section
-            # for answer in json_data.get('Answer', []):
-            #     try:
-            #         name = dns.name.from_text(answer.get('name', '.'))
-            #         ttl = int(answer.get('TTL', 300))
-            #         data = answer.get('data', '')
-            #
-            #         # Determine rdtype
-            #         type_val = answer.get('type')
-            #         rdtype = None
-            #         if isinstance(type_val, int):
-            #             try:
-            #                 # Convert integer type to dns.rdatatype.RdataType enum
-            #                 rdtype = dns.rdatatype.RdataType(type_val)
-            #             except ValueError:
-            #                 self.logger.warning(
-            #                     f"Invalid integer RR TYPE received in JSON: {type_val} for name {name}. Skipping record.")
-            #                 continue  # Skip this answer record
-            #         elif isinstance(type_val, str):
-            #             # Fallback if type is unexpectedly a string
-            #             try:
-            #                 rdtype = dns.rdatatype.from_text(type_val)
-            #             except dns.rdatatype.UnknownRdatatype:
-            #                 self.logger.warning(
-            #                     f"Unknown string RR TYPE received in JSON: '{type_val}' for name {name}. Skipping record.")
-            #                 continue  # Skip this answer record
-            #         else:
-            #             self.logger.warning(f"Missing or invalid RR TYPE in JSON for name {name}. Skipping record.")
-            #             continue  # Skip this answer record
-            #
-            #         # Create appropriate rdata based on type
-            #         rdata = None
-            #         if rdtype == dns.rdatatype.A:
-            #             # Use the library's recommended way to create from text for specific types
-            #             rdata = dns.rdata.from_text(dns.rdataclass.IN, rdtype, data)
-            #         elif rdtype == dns.rdatatype.AAAA:
-            #             rdata = dns.rdata.from_text(dns.rdataclass.IN, rdtype, data)
-            #         elif rdtype == dns.rdatatype.CNAME:
-            #             # CNAME data needs to be a dns.name object
-            #             rdata = dns.rdata.from_text(dns.rdataclass.IN, rdtype, data)
-            #         elif rdtype == dns.rdatatype.MX:
-            #             # MX data needs preference (int) and name (str)
-            #             rdata = dns.rdata.from_text(dns.rdataclass.IN, rdtype, data)
-            #         elif rdtype == dns.rdatatype.TXT:
-            #             # TXT data needs to be bytes or list of bytes
-            #             # The from_text handles quoting etc.
-            #             rdata = dns.rdata.from_text(dns.rdataclass.IN, rdtype, data)
-            #         elif rdtype == dns.rdatatype.HTTPS:
-            #             # HTTPS data is defined in RFC 9115 and is a string of parameters
-            #             rdata = dns.rdata.from_text(dns.rdataclass.IN, rdtype, data)
-            #         else:
-            #             self.logger.warning(
-            #                 f"Unsupported RR TYPE {dns.rdatatype.to_text(rdtype)} ({rdtype}) for name {name}. Skipping record.")
-            #             continue  # Skip unsupported types
-            #
-            #         # Create RRset and add rdata
-            #         rrset = dns.rrset.from_rdata(name, ttl, rdata)
-            #         response.answer.append(rrset)
-            #
-            #     except Exception as e_ans:
-            #         self.logger.error(f"Error processing JSON answer record {answer}: {e_ans}")
-            #         continue  # Skip problematic answer records
-            #
-            # return response.to_wire()
-
-        # except Exception as convert_e:
-        #     self.logger.error(f"Failed to convert JSON to DNS response: {convert_e}")
-        #     # Fallback: return a SERVFAIL based on original request if conversion fails badly
-        #     try:
-        #         fail_response = dns.message.make_response(original_request)
-        #         fail_response.set_rcode(dns.rcode.SERVFAIL)
-        #         return self._create_error_response()
-        #     except Exception as e:
-        #         self.logger.error(f"Failed to return a SERVFAIL response: {convert_e}")
-        #         return None  # Absolute last resort
-
 
 if __name__ == '__main__':
     print("Starting DNS Proxy Server directly (for testing)...")
     # Configure with some defaults for direct execution
     proxy = DNSProxyServer(
-        log_level=logging.DEBUG,
-        block_malicious=True
+        log_level=logging.INFO,
+        block_malicious=False,
+        doh_providers=['https://1.1.1.1/dns-query']
     )
     try:
         proxy.start()
