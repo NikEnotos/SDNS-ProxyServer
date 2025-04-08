@@ -269,7 +269,6 @@ class DNSProxyServer:
                 # ----- Prepare for the concurrent operations -----
                 # Initialize variables to use threads and store results of concurrent operations
                 domain_checker: Optional[DomainChecker] = None
-                checker_thread: Optional[threading.Thread] = None
                 doh_thread: Optional[threading.Thread] = None
 
                 # Use a list to hold the result from the DoH thread as it is mutable
@@ -279,16 +278,16 @@ class DNSProxyServer:
 
                 # ----- Start the concurrent checks -----
                 if self.block_malicious and domain_to_check:
-                    check_wait_start = time.monotonic()  # TODO remove
-                    domain_checker = DomainChecker(domain_to_check)
-                    domain_checker.start_checks()
-                    self.logger.debug(f"Started domain checks for {domain_to_check} (TCP)")
+                    if domain_to_check != "ismalicious.com" and domain_to_check != "www.virustotal.com": # Prevent checking domain validators
+                        check_wait_start = time.monotonic()  # TODO remove
+                        domain_checker = DomainChecker(domain_to_check)
+                        domain_checker.start_checks()
+                        self.logger.debug(f"Started domain checks for {domain_to_check} (TCP)")
 
                 # Define the target function for the DoH thread
                 def doh_worker():
                     try:
-                        doh_result[0] = self._forward_to_doh(data)
-                        #doh_result[0] = response_data  # Store result in mutable list
+                        doh_result[0] = self._forward_to_doh(data) # Store result in mutable list
                     except Exception as e_doh:
                         self.logger.error(f"Exception in DoH worker thread for {domain_to_check} (TCP): {e_doh}",exc_info=True)
                         doh_result[0] = None
@@ -382,7 +381,7 @@ class DNSProxyServer:
                             f"Failed to send TCP response to {addr}: {send_err}. Client might have closed connection.")
                 else:
                     # This means even SERVFAIL failed to generate
-                    self.logger.error(f"No final response generated for TCP request from {addr}. Closing connection.")
+                    self.logger.error(f"No final response generated for TCP request from {addr} for {domain_to_check}. Closing connection.")
 
             else:
                 self.logger.info(f"Received non-DNS TCP message from {addr}, ignoring and closing.")
@@ -470,7 +469,6 @@ class DNSProxyServer:
             # ----- Prepare for the concurrent operations -----
             # Initialize variables to use threads and store results of concurrent operations
             domain_checker: Optional[DomainChecker] = None
-            checker_thread: Optional[threading.Thread] = None
             doh_thread: Optional[threading.Thread] = None
 
             # Use a list to hold the result from the DoH thread as it is mutable
@@ -480,16 +478,16 @@ class DNSProxyServer:
 
             # ----- Start the concurrent checks -----
             if self.block_malicious and domain_to_check:
-                check_wait_start = time.monotonic() # TODO remove
-                domain_checker = DomainChecker(domain_to_check)
-                domain_checker.start_checks()
-                self.logger.debug(f"Started domain checks for {domain_to_check} (UDP)")
+                if domain_to_check != "ismalicious.com" and domain_to_check != "www.virustotal.com":  # Prevent checking domain validators
+                    check_wait_start = time.monotonic() # TODO remove
+                    domain_checker = DomainChecker(domain_to_check)
+                    domain_checker.start_checks()
+                    self.logger.debug(f"Started domain checks for {domain_to_check} (UDP)")
 
             # Define the target function for the DoH thread
             def doh_worker():
                 try:
-                    response_data = self._forward_to_doh(data)
-                    doh_result[0] = response_data  # Store result in mutable list
+                    doh_result[0] = self._forward_to_doh(data) # Store result in mutable list
                 except Exception as e_doh:
                     self.logger.error(f"Exception in DoH worker thread for {domain_to_check} (UDP): {e_doh}", exc_info=True)
                     doh_result[0] = None
@@ -990,7 +988,7 @@ if __name__ == '__main__':
     # Configure with some defaults for direct execution
     proxy = DNSProxyServer(
         log_level=logging.INFO,
-        block_malicious=False,
+        block_malicious=True,
         doh_providers=['https://1.1.1.1/dns-query']
     )
     try:
