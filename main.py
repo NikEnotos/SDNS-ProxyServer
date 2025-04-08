@@ -201,7 +201,7 @@ def main():
     for provider in final_doh_providers:
         print(f"\t\t- {provider}")
 
-    print(f"  Randomize:    {args.randomize}")
+    print(f"  Randomization:  {"ENABLED" if args.randomize else "DISABLED"}")
     print("-" * 60)
     print(f"  Blocking Mode:  {'ENABLED' if args.block else 'DISABLED'}")
     if args.block:
