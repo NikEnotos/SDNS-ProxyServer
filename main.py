@@ -126,11 +126,6 @@ def main():
         action='store_true', # Makes it a boolean flag, True if present
         help="Randomize the DoH provider selection for each request."
     )
-    # parser.add_argument(
-    #     '-b', '--block',
-    #     action='store_true', # Makes it a boolean flag, True if present
-    #     help="Enable or disable malicious/suspicious domain checking and blocking."
-    # )
     parser.add_argument(
         '-c', '--checker-service',
         choices=['virustotal', 'ismalicious', 'both'], # Valid explicit choices
@@ -211,12 +206,12 @@ def main():
     for provider in final_doh_providers:
         print(f"\t\t - {provider}")
 
-    print(f"  Randomization:   {"ENABLED" if args.randomize else "DISABLED"}")
+    print(f"  Randomization:   {'ENABLED' if args.randomize else 'DISABLED'}")
     print("-" * 60)
     if args.checker_service:
         print(f"  Blocking Mode:   ENABLED")
         print(f"  Checker Service: {args.checker_service.upper()}")
-        print(f"  Redirect IP:     {args.redirect_ip if args.redirect_ip else "Redirection is DISABLED"}")
+        print(f"  Redirect IP:     {args.redirect_ip if args.redirect_ip else 'Redirection is DISABLED'}")
     else:
         print(f"  Blocking Mode:   DISABLED")
     print(f"  Log Level:       {logging.getLevelName(log_level)}")

@@ -60,6 +60,17 @@ class DNSProxyServer:
         logging.basicConfig(level=log_level, format='%(asctime)s - %(levelname)s - %(message)s')
         self.logger = logging.getLogger(__name__)
 
+    def get_local_ip(self):
+        """Gets the local IP address of the machine."""
+        try:
+            # Get the hostname of the computer
+            hostname = socket.gethostname()
+            # Use the hostname to get the IP address
+            ip_address = socket.gethostbyname(hostname)
+            return ip_address
+        except socket.gaierror:
+            return "Could not get local IP address."
+
     def start(self):
         """Start the DNS proxy server (both UDP and TCP)"""
         try:
@@ -68,7 +79,7 @@ class DNSProxyServer:
             self._udp_thread = threading.Thread(target=self._udp_listener)
             self._udp_thread.daemon = True
             self._udp_thread.start()
-            self.logger.info(f"UDP DNS proxy listening on {self.listen_ip}:{self.listen_port}")
+            self.logger.info(f"UDP DNS proxy listening on {self.listen_ip if self.listen_ip != '0.0.0.0' else self.get_local_ip()}:{self.listen_port}")
 
             # Start TCP server
             self.tcp_socket.bind((self.listen_ip, self.listen_port))
@@ -76,9 +87,9 @@ class DNSProxyServer:
             self._tcp_thread = threading.Thread(target=self._tcp_listener)
             self._tcp_thread.daemon = True
             self._tcp_thread.start()
-            self.logger.info(f"TCP DNS proxy listening on {self.listen_ip}:{self.listen_port}")
+            self.logger.info(f"TCP DNS proxy listening on {self.listen_ip if self.listen_ip != '0.0.0.0' else self.get_local_ip()}:{self.listen_port}")
 
-            self.logger.info(f"Malicious domain blocking is : {"enabled" if self.checker_service else "disabled"}")
+            self.logger.info(f"Malicious domain blocking is : {'enabled' if self.checker_service else 'disabled'}")
             if self.checker_service:
                 if self.redirect_ip:
                     self.logger.info(f"Redirecting blocked domains to: {self.redirect_ip}")
