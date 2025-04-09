@@ -7,6 +7,9 @@ This script runs a local DNS server that forwards queries securely using **DNS-o
 
 Additionally, it can optionally check requested domains against VirusTotal and/or IsMalicious APIs to block access to known malicious or suspicious sites *before* resolving them.
 
+
+   `Don't forget to star ⭐ this repository `
+
 ## ✨ Key Features
 
 * **🔒 DNS-over-HTTPS (DoH) Forwarding:** Converts standard DNS requests (UDP/TCP) into secure DoH requests.
