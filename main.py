@@ -2,6 +2,7 @@ import argparse
 import sys
 import re
 import logging
+import socket
 from dns_proxy import DNSProxyServer
 
 # Default DoH providers
@@ -83,6 +84,23 @@ def validate_ip_address(ip_string):
          )
     return ip_string
 
+def get_host_ip():
+    """Attempts to get the primary non-loopback IP address."""
+    s = None
+    try:
+        # Connect to an external address without sending any data
+        # to find the socket's source IP address.
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80)) # Google's DNS server, port 80
+        ip = s.getsockname()[0]
+        return ip
+    except Exception as e:
+        print(f"\nWarning: Could not automatically determine host IP: {e}", file=sys.stderr)
+        return None
+    finally:
+        if s:
+            s.close()
+
 def main():
     parser = argparse.ArgumentParser(
         description="Run a DNS proxy server that replaces DNS queries with more secure DNS over HTTPS (DoH).",
@@ -162,8 +180,7 @@ def main():
     elif args.verbose >=  3:
         log_level = logging.DEBUG   # -vvv option
 
-    logging.basicConfig(level=log_level, format='%(asctime)s - %(levelname)s - %(message)s', stream=sys.stdout)
-    # Get logger for this main module
+    logging.basicConfig(level=log_level, format='%(asctime)s - %(levelname)s - %(message)s')
     logger = logging.getLogger(__name__)
     # ----- End Logging Setup -----
 
@@ -194,10 +211,11 @@ def main():
         sys.exit("Configuration error: No DoH providers specified.")
     # ----- End of Provider List Logic -----
 
-
+    host_ip_guess = get_host_ip()
     print("-" * 60)
     print("Starting DNS Proxy Server with the following settings:")
-    print(f"  Listen Address:  {args.listen_ip}:{args.listen_port}")
+    print(f"  Accessible On:   {host_ip_guess if host_ip_guess else args.listen_ip}:{args.listen_port}")
+    print(f"                   (Use host's IP to connect to the server!)\n")
 
     # Compare final_doh_providers to DEFAULT_DOH_PROVIDERS to decide whether to display [DEFAULT LIST] label
     is_default_list = sorted(final_doh_providers) == sorted(DEFAULT_DOH_PROVIDERS)

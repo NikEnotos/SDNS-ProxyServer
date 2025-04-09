@@ -34,4 +34,4 @@ ENTRYPOINT ["python", "main.py"]
 # --- Define default arguments for the ENTRYPOINT ---
 # These will be used if no arguments are provided on 'docker run'
 # Use the exec form for CMD as well
-CMD ["-vv"]
+CMD ["-v"]
