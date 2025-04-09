@@ -56,9 +56,11 @@ class DNSProxyServer:
         self._udp_thread = None  # To join later
         self._tcp_thread = None  # To join later
 
-        # Set up logging
-        logging.basicConfig(level=log_level, format='%(asctime)s - %(levelname)s - %(message)s')
+        # Set up logging - Use basicConfig only if no handlers exist
+        if not logging.getLogger().hasHandlers():
+             logging.basicConfig(level=log_level, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(log_level) # Ensure logger level is set
 
 
     def start(self):

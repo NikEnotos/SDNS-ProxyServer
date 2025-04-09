@@ -180,8 +180,12 @@ def main():
     elif args.verbose >=  3:
         log_level = logging.DEBUG   # -vvv option
 
-    logging.basicConfig(level=log_level, format='%(asctime)s - %(levelname)s - %(message)s')
+    # Configure root logger
+    logging.basicConfig(level=log_level, format='%(asctime)s - %(levelname)s - %(message)s', stream=sys.stdout)
+    # Get logger for this main module specifically
     logger = logging.getLogger(__name__)
+    # Set level explicitly for this logger too, in case root logger level is different
+    logger.setLevel(log_level)
     # ----- End Logging Setup -----
 
 

@@ -53,10 +53,9 @@ class DomainChecker:
         self._im_thread: Optional[threading.Thread] = None
         # Lock for thread-safe updates
         self.lock = threading.Lock()
-        #self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")  # Instance-specific logger
-        # Set up logging
-        logging.basicConfig(level=log_level, format='%(asctime)s - %(levelname)s - %(message)s')
-        self.logger = logging.getLogger(__name__)
+
+        # Set up instance-specific loggerogging
+        self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
     def _check_domain_ismalicious_thread(self):
         """Internal method to run IsMalicious check in a thread."""

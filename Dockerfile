@@ -2,7 +2,7 @@
 
 # Use an official Python runtime as a parent image
 # Using a slim variant reduces the image size
-FROM python:3.10-slim
+FROM python:3.13-slim
 
 # Set the working directory in the container
 WORKDIR /app
@@ -27,6 +27,9 @@ ENV ISMALICIOUS_API_SECRET=""
 # Expose the standard DNS ports the application listens on
 EXPOSE 53/udp
 EXPOSE 53/tcp
+
+# Set standard output and standard error streams to no buffer mode, preventing delays in output.
+ENV PYTHONUNBUFFERED=1
 
 # Use the exec form for ENTRYPOINT
 ENTRYPOINT ["python", "main.py"]
