@@ -1,7 +1,6 @@
 # Dockerfile
 
 # Use an official Python runtime as a parent image
-# Using a slim variant reduces the image size
 FROM python:3.13-slim
 
 # Set the working directory in the container
@@ -17,13 +16,11 @@ RUN pip install --no-cache-dir --trusted-host pypi.python.org -r requirements.tx
 # Copy the rest of the application code into the working directory
 COPY *.py ./
 
-# --- Environment Variables for API Keys (Best Practice) ---
 # Set default values to empty strings. These will be overridden at runtime.
 ENV VIRUSTOTAL_API_KEY=""
 ENV ISMALICIOUS_API_KEY=""
 ENV ISMALICIOUS_API_SECRET=""
 
-# --- Expose Ports ---
 # Expose the standard DNS ports the application listens on
 EXPOSE 53/udp
 EXPOSE 53/tcp
@@ -31,10 +28,8 @@ EXPOSE 53/tcp
 # Set standard output and standard error streams to no buffer mode, preventing delays in output.
 ENV PYTHONUNBUFFERED=1
 
-# Use the exec form for ENTRYPOINT
+# Used to specify the command to run the script
 ENTRYPOINT ["python", "main.py"]
 
-# --- Define default arguments for the ENTRYPOINT ---
 # These will be used if no arguments are provided on 'docker run'
-# Use the exec form for CMD as well
 CMD ["-v"]
