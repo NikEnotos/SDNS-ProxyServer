@@ -13,6 +13,7 @@ Additionally, it can optionally check requested domains against VirusTotal and/o
 ## ✨ Key Features
 
 * **🔒 DNS-over-HTTPS (DoH) Forwarding:** Converts standard DNS requests (UDP/TCP) into secure DoH requests.
+* **🚀 Multiple DoH Request Methods:** Supports standard RFC 8484 DoH requests using both `POST` and `GET` methods, with fallback to JSON API (`GET`) for broader compatibility.
 * **🌐 Configurable DoH Providers:** Use a default list of well-known DoH providers or specify your own custom list via command-line arguments.
 * **🔄 Provider Randomization:** Optionally choose a DoH provider randomly from the configured list for each query to distribute load and potentially reduce fingerprinting.
 * **🛡️ Malicious Domain Blocking (Optional):**
