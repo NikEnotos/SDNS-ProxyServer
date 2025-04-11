@@ -227,182 +227,149 @@ class DNSProxyServer:
                 time.sleep(0.1)  # Prevent fast error loops
         self.logger.debug("TCP listener thread finished.")
 
-    def _handle_tcp_client(self, client_sock: socket.socket, addr: Tuple[str, int]):
+    def _process_dns_query_concurrently(self, data: bytes, domain_to_check: str, protocol: str) -> Optional[bytes]:
         """
-        Handle a TCP client connection and performs domain check and DoH lookup concurrently.
+        Performs domain check and DoH lookup concurrently for a DNS query.
 
         Args:
-            client_sock: Socket object created specifically for communication with the connecting client
-            addr: The client's address - Tuple[IP address, port]
+            data: The raw DNS request data.
+            domain_to_check: The domain extracted from the DNS query.
+            protocol: String indicating the protocol ("TCP" or "UDP") for logging.
+
+        Returns:
+            The final DNS response bytes to send back, or None if an error occurred preventing response generation.
         """
-        try:
-            # Set timeout for receiving data on the client socket
-            client_sock.settimeout(10.0)
+        domain_checker: Optional[DomainChecker] = None
+        doh_thread: Optional[threading.Thread] = None
+        # Use a list to hold the result from the DoH thread as it is mutable
+        doh_result: List[Optional[bytes]] = [None]
 
-            # In TCP DNS, the first 2 bytes indicate the length of the DNS message
-            length_bytes = client_sock.recv(2)
-            if not length_bytes or len(length_bytes) < 2:
-                self.logger.warning(f"Invalid TCP message from {addr}, closing connection")
-                # Socket closere is handled in finally block
-                return
-
-            # '!H' is a format string defining how to interpret the bytes:
-            # '!' specifies the byte order as network (big-endian)
-            # 'H' specifies the data type as an unsigned short integer
-            length = struct.unpack('!H', length_bytes)[0]
-            if length == 0:
-                self.logger.warning(f"Zero-length TCP message from {addr}, closing connection")
-                return
-
-            data = client_sock.recv(length)
-            if len(data) != length:
-                self.logger.warning(f"Incomplete TCP message from {addr}, closing connection")
-                return
-
-            if self._is_dns_request(data):
-                # Parse the DNS request
-                request = dns.message.from_wire(data)
-
-                domain_to_check = None
-                # Log the query details
-                for question in request.question:
-                    domain_to_check = question.name.to_text(omit_final_dot=True)
-                    qtype = dns.rdatatype.to_text(question.rdtype)
-                    self.logger.info(
-                        f"[>] Received (TCP) DNS request from \t{str(addr):<25} for [{domain_to_check}] (Type: {qtype})")
-
-                # ----- Prepare for the concurrent operations -----
-                # Initialize variables to use threads and store results of concurrent operations
-                domain_checker: Optional[DomainChecker] = None
-                doh_thread: Optional[threading.Thread] = None
-
-                # Use a list to hold the result from the DoH thread as it is mutable
-                doh_result: List[Optional[bytes]] = [None]
-
-                # ----- Start the concurrent checks -----
-                if self.checker_service is not None and domain_to_check:
-                    if domain_to_check != "ismalicious.com" and domain_to_check != "www.virustotal.com":  # Prevent checking domain validators
-                        check_wait_start = time.monotonic()  # TODO remove
-                        domain_checker = DomainChecker(domain_to_check, service=self.checker_service)
-                        domain_checker.start_checks()
-                        self.logger.debug(f"Started domain checks for {domain_to_check} (TCP)")
-
-                # Define the target function for the DoH thread
-                def doh_worker():
-                    try:
-                        doh_result[0] = self._forward_to_doh(data)  # Store result in mutable list
-                    except Exception as e_doh:
-                        self.logger.error(f"Exception in DoH worker thread for {domain_to_check} (TCP): {e_doh}",
-                                          exc_info=True)
-                        doh_result[0] = None
-
-                # Start DoH request in its own thread
-                self.logger.debug(f"Started DoH forwarding thread for {domain_to_check} (TCP)")
-                doh_wait_start = time.monotonic()  # TODO remove
-                doh_thread = (threading.Thread(target=doh_worker, daemon=True))
-                doh_thread.start()
-
-                # ----- Wait for results of the concurrent checks -----
-                # Wait for DoH request thread
-                if doh_thread:
-                    doh_thread.join(timeout=6.0)
-                    self.logger.debug(
-                        f"DoH (TCP) thread for \t[{domain_to_check}] finished or timed out in {time.monotonic() - doh_wait_start:.2f}s")  # TODO remove time tracking
-                    if doh_thread.is_alive():
-                        self.logger.warning(f"DoH (TCP) thread for \t[{domain_to_check}]  timed out.")
-
-                # Wait for domain checks (if started)
-                if domain_checker:
-                    domain_checker.wait_for_completion(timeout=4.0)
-                    self.logger.debug(
-                        f"Domain checks (TCP) for \t[{domain_to_check}] finished or timed out in {time.monotonic() - check_wait_start:.2f}s")  # TODO remove time tracking
-
-                # ----- Process the results -----
-                final_response: Optional[bytes] = None
-
-                # Check domain status if blocking enabled and checks were run
-                is_bad_domain = False
-                if self.checker_service is not None and domain_checker:
-                    if domain_checker.is_malicious(self.block_threshold_malicious):
-                        self.logger.warning(
-                            f"[!!!] MALICIOUS domain blocked (TCP): [{domain_to_check}]")  # TODO: Think about adding score display
-                        is_bad_domain = True
-                    elif domain_checker.is_suspicious(self.block_threshold_suspicious):
-                        self.logger.warning(
-                            f"[!] SUSPICIOUS domain blocked (TCP): [{domain_to_check}]")  # TODO: Think about adding score display
-                        is_bad_domain = True
-
-                # If domain is not bad, use DoH result
-                if not is_bad_domain:
-                    response_data = doh_result[0]  # Get result from the shared list
-                    if response_data:
-                        final_response = response_data
-                        try:
-                            # Log received response information
-                            response_msg = dns.message.from_wire(response_data)
-                            rcode_text = dns.rcode.to_text(response_msg.rcode())
-                            answer_count = len(response_msg.answer)
-                            self.logger.info(
-                                f"[+] DoH Response for \t\t[{domain_to_check}]: \t{rcode_text}, {answer_count} answers")
-
-                            # Log every IPv4 and IPv6 addresses in the response
-                            for answer in response_msg.answer:
-                                # Loop through each resource record in the answer.
-                                for record in answer:
-                                    # Check if the record is an A record (IPv4 address).
-                                    if record.rdtype == dns.rdatatype.A:
-                                        self.logger.info(f"  ↳ IPv4: {record.address:<15}\t\t[{domain_to_check}]")
-
-                                    elif record.rdtype == dns.rdatatype.AAAA:
-                                        self.logger.info(f"  ↳ IPv6: {record.address:<39}\t\t[{domain_to_check}]")
-
-                        except Exception:
-                            self.logger.warning("Could not parse DoH response for logging (TCP).")
-                    else:
-                        # DoH failed or timed out, create SERVFAIL
-                        self.logger.error(f"DoH lookup failed for {domain_to_check} (TCP). Sending SERVFAIL.")
-                        final_response = self._create_error_response(data, dns.rcode.SERVFAIL)
-
-                # If domain is not bad, use redirect
-                else:
-                    # TODO: redirection logic here, SERVFAIL for now
-                    final_response = self._create_error_response(data, dns.rcode.SERVFAIL)
-
-                # ----- Send parsed results as a response -----
-                if final_response:
-                    # Prepend 2-byte length for TCP response
-                    response_length_bytes = struct.pack('!H', len(final_response))
-                    try:
-                        client_sock.sendall(response_length_bytes + final_response)
-                        self.logger.debug(f"[<] Sent TCP response ({len(final_response)} bytes) to {addr}")
-                    except socket.error as send_err:
-                        self.logger.warning(
-                            f"Failed to send TCP response to {addr}: {send_err}. Client might have closed connection.")
-                else:
-                    # This means even SERVFAIL failed to generate
+        # ----- Start the concurrent checks -----
+        if self.checker_service is not None and domain_to_check:
+            # Prevent checking domain validators
+            if domain_to_check not in ["ismalicious.com", "www.virustotal.com"]:
+                check_wait_start = time.monotonic()
+                try:
+                    domain_checker = DomainChecker(domain_to_check, service=self.checker_service)
+                    domain_checker.start_checks()
+                    self.logger.debug(f"Started domain checks for {domain_to_check} ({protocol})")
+                except Exception as e_check_start:
                     self.logger.error(
-                        f"No final response generated for TCP request from {addr} for {domain_to_check}. Closing connection.")
+                        f"Failed to start domain checker for {domain_to_check} ({protocol}): {e_check_start}",
+                        exc_info=True)
+                    domain_checker = None  # Ensure checker is None if start failed
 
-            else:
-                self.logger.info(f"Received non-DNS TCP message from {addr}, ignoring and closing.")
-
-
-
-        except socket.timeout:
-            self.logger.warning(f"TCP connection from {addr} for [{domain_to_check}] timed out during communication.")
-        except (socket.error, OSError) as e:
-            self.logger.error(f"Socket error handling TCP client {addr}: {e}", exc_info=True)
-        except dns.exception.DNSException as e:
-            self.logger.error(f"DNS parsing/processing error for TCP client {addr}: {e}", exc_info=True)
-        except Exception as e:
-            self.logger.error(f"Unexpected error handling TCP client {addr}: {e}", exc_info=True)
-        finally:
-            # Ensure the client socket is always closed
+        # Define the target function for the DoH thread
+        def doh_worker():
             try:
-                client_sock.close()
-                self.logger.debug(f"[*] Closed TCP connection from {addr}")
-            except Exception as close_err:
-                self.logger.error(f"Error closing TCP client socket for {addr}: {close_err}")
+                doh_result[0] = self._forward_to_doh(data)
+            except Exception as e_doh:
+                self.logger.error(f"Exception in DoH worker thread for {domain_to_check} ({protocol}): {e_doh}",
+                                  exc_info=True)
+                doh_result[0] = None
+
+        # Start DoH request in its own thread
+        self.logger.debug(f"Started DoH forwarding thread for {domain_to_check} ({protocol})")
+        doh_wait_start = time.monotonic()
+        try:
+            doh_thread = threading.Thread(target=doh_worker, daemon=True)
+            doh_thread.start()
+        except Exception as e_thread_start:
+            self.logger.error(f"Failed to start DoH thread for {domain_to_check} ({protocol}): {e_thread_start}",
+                              exc_info=True)
+            doh_thread = None  # Ensure thread is None if start failed
+            doh_result[0] = None  # Assume DoH failed if thread didn't start
+
+        # ----- Wait for results of the concurrent checks -----
+        # Wait for DoH request thread
+        if doh_thread:
+            try:
+                doh_thread.join(timeout=4.0)
+                self.logger.debug(
+                    f"DoH ({protocol}) thread for \t[{domain_to_check}] finished or timed out in {time.monotonic() - doh_wait_start:.2f}s")
+                if doh_thread.is_alive():
+                    self.logger.warning(
+                        f"DoH ({protocol}) thread for \t[{domain_to_check}] timed out.")
+            except Exception as e_join:
+                self.logger.error(f"Error joining DoH thread for {domain_to_check} ({protocol}): {e_join}",
+                                  exc_info=True)
+                # Continue, doh_result might still be None or have a value if worker finished before join error
+
+        # Wait for domain checks (if started and start didn't fail)
+        if domain_checker:
+            try:
+                # Use remaining time budget, ensure timeout is not negative
+                remaining_time = max(1.0, 4.0 - (time.monotonic() - check_wait_start))
+                domain_checker.wait_for_completion(timeout=remaining_time)
+                self.logger.debug(
+                    f"Domain checks ({protocol}) for \t[{domain_to_check}] finished or timed out in {time.monotonic() - check_wait_start:.2f}s")
+            except Exception as e_wait:
+                self.logger.error(f"Error waiting for domain checker for {domain_to_check} ({protocol}): {e_wait}",
+                                  exc_info=True)
+                # Continue, checker might have results anyway or might be unusable
+
+        # ----- Process the results -----
+        final_response: Optional[bytes] = None
+        is_bad_domain = False
+
+        # Check domain status if blocking enabled and checks were run successfully
+        if self.checker_service is not None and domain_checker:
+            try:
+                if domain_checker.is_malicious(self.block_threshold_malicious):
+                    self.logger.warning(
+                        f"[!!!] MALICIOUS domain blocked ({protocol}): [{domain_to_check}]")
+                    is_bad_domain = True
+                elif domain_checker.is_suspicious(self.block_threshold_suspicious):
+                    self.logger.warning(
+                        f"[!] SUSPICIOUS domain blocked ({protocol}): [{domain_to_check}]")
+                    is_bad_domain = True
+            except Exception as e_check_result:
+                self.logger.error(
+                    f"Error processing domain check results for {domain_to_check} ({protocol}): {e_check_result}",
+                    exc_info=True)
+                # To be safe, assume domain might be bad if checker failed after starting
+                is_bad_domain = True
+
+        # If domain is bad, generate response with redirection
+        if is_bad_domain:
+            # TODO: Call redirection logic here (for now return just SERVFAIL)
+            self.logger.info(
+                f"Domain [{domain_to_check}] ({protocol}) identified as malicious/suspicious. Sending SERVFAIL.")
+            final_response = self._create_error_response(data, dns.rcode.SERVFAIL)
+
+        # If domain is not bad, use DoH result
+        else:
+            response_data = doh_result[0]
+            if response_data:
+                final_response = response_data
+                try:
+                    # Log received response information
+                    response_msg = dns.message.from_wire(response_data)
+                    rcode_text = dns.rcode.to_text(response_msg.rcode())
+                    answer_count = len(response_msg.answer)
+                    self.logger.info(
+                        f"[+] DoH ({protocol}) Response for \t\t[{domain_to_check}]: \t{rcode_text}, {answer_count} answers")
+
+                    # Log every IPv4 and IPv6 addresses in the response
+                    for answer in response_msg.answer:
+                        for record in answer:
+                            if record.rdtype == dns.rdatatype.A:
+                                self.logger.info(
+                                    f"  ↳ IPv4: {record.address:<15}\t\t[{domain_to_check}] ({protocol})")
+                            elif record.rdtype == dns.rdatatype.AAAA:
+                                self.logger.info(
+                                    f"  ↳ IPv6: {record.address:<39}\t\t[{domain_to_check}] ({protocol})")
+                except Exception:
+                    # Log warning but still return the response_data as final_response
+                    self.logger.warning(
+                        f"Could not parse DoH response for logging ({protocol}) for domain [{domain_to_check}]. Response will be forwarded.")
+            else:
+                # DoH failed or timed out, create SERVFAIL
+                self.logger.error(
+                    f"DoH ({protocol}) lookup failed for [{domain_to_check}]. Sending SERVFAIL.")
+                final_response = self._create_error_response(data, dns.rcode.SERVFAIL)
+
+        return final_response
 
     def _is_dns_request(self, data: bytes) -> bool:
         """
@@ -433,167 +400,180 @@ class DNSProxyServer:
             self.logger.debug(f"Unexpected error during DNS parsing check: {e}")
             return False
 
-    def _handle_dns_request(self, data: bytes, addr: Tuple[str, int]):
+    def _handle_tcp_client(self, client_sock: socket.socket, addr: Tuple[str, int]):
         """
-        Handles an incoming DNS request.
-        Performs domain check and DoH lookup concurrently, then sends response.
+        Handle a TCP client connection. Parses the request,
+        performs domain check and DoH lookup concurrently, and sends back the response.
 
         Args:
-            data: The raw DNS request data
-            addr: The client's address - Tuple[IP address, port]
+            client_sock: Socket object for the client connection.
+            addr: The client's address tuple (IP, port).
         """
+        data: Optional[bytes] = None
+        domain_to_check: Optional[str] = None
+        try:
+            # Set timeout for receiving data on the client socket
+            client_sock.settimeout(10.0)
+
+            # In TCP DNS, the first 2 bytes indicate the length of the DNS message
+            length_bytes = client_sock.recv(2)
+            if not length_bytes or len(length_bytes) < 2:
+                self.logger.warning(f"Invalid TCP message length from {addr}, closing connection")
+                # Socket closere is handled in finally block
+                return
+
+            # '!H' is a format string defining how to interpret the bytes:
+            # '!' specifies the byte order as network (big-endian)
+            # 'H' specifies the data type as an unsigned short integer
+            length = struct.unpack('!H', length_bytes)[0]
+            if length == 0:
+                self.logger.warning(f"Zero-length TCP message from {addr}, closing connection")
+                # Socket closere is handled in finally block
+                return
+
+            # Read actual DNS query
+            data = client_sock.recv(length)
+            if len(data) != length:
+                self.logger.warning(f"Incomplete TCP message from {addr} (expected {length}, got {len(data)}), closing connection")
+                # Socket closere is handled in finally block
+                return
+
+            if not self._is_dns_request(data):
+                 self.logger.info(f"Received non-DNS TCP message from {addr}, ignoring and closing.")
+                 # Socket closere is handled in finally block
+                 return
+
+            # Parse amd log the query details
+            request = dns.message.from_wire(data)
+            if request.question:
+                question = request.question[0]
+                domain_to_check = question.name.to_text(omit_final_dot=True)
+                qtype = dns.rdatatype.to_text(question.rdtype)
+                self.logger.info(
+                    f"[>] Received (TCP) DNS request from \t{str(addr):<25} for [{domain_to_check}] (Type: {qtype})")
+            else:
+                # Should not happen if _is_dns_request passed, but handle defensively
+                self.logger.warning(f"Received DNS request from {addr} (TCP) with no questions.")
+                # Send FORMERR response
+                final_response = self._create_error_response(data, dns.rcode.FORMERR)
+                # Proceed to send this response below
+
+            # If domain extracted, process its check and DoH request concurrently
+            if domain_to_check:
+                 final_response = self._process_dns_query_concurrently(data, domain_to_check, "TCP")
+
+            # ----- Send response -----
+            if final_response:
+                # Prepend 2-byte length for TCP response
+                response_length_bytes = struct.pack('!H', len(final_response))
+                try:
+                    client_sock.sendall(response_length_bytes + final_response)
+                    self.logger.debug(f"[<] Sent TCP response ({len(final_response)} bytes) to {addr} for [{domain_to_check}]")
+                except socket.error as send_err:
+                    self.logger.warning(f"Failed to send TCP response to {addr} for [{domain_to_check}]: {send_err}. Client might have closed connection.")
+            else:
+                # This means even SERVFAIL failed to generate
+                self.logger.error(f"No final response generated for TCP request from {addr} for {domain_to_check}. Closing connection.")
+
+
+        except socket.timeout:
+            self.logger.warning(f"TCP connection from {addr} timed out during communication.")
+        except (socket.error, OSError) as e:
+            # Log specific socket errors related to TCP handling
+            self.logger.error(f"Socket error handling TCP client {addr}: {e}", exc_info=True)
+        except dns.exception.DNSException as e:
+            # Errors during initial parsing
+            self.logger.error(f"DNS parsing/processing error for TCP client {addr}: {e}", exc_info=True)
+            # Try sending SERVFAIL if possible
+            if data:
+                try:
+                    error_response = self._create_error_response(data, dns.rcode.SERVFAIL)
+                    if error_response:
+                        # Prepend 2-byte length for TCP response
+                         response_length_bytes = struct.pack('!H', len(error_response))
+                         client_sock.sendall(response_length_bytes + error_response)
+                         self.logger.warning(f"Sent SERVFAIL error response over TCP to {addr} due to processing error.")
+                except Exception as e_send_err:
+                     self.logger.error(f"Failed to send SERVFAIL error response over TCP to {addr}: {e_send_err}")
+        except Exception as e:
+            # Catch-all for unexpected errors in this handler
+            self.logger.error(f"Unexpected error handling TCP client {addr}: {e}", exc_info=True)
+        finally:
+            # Ensure the client socket is always closed
+            try:
+                client_sock.close()
+                self.logger.debug(f"[*] Closed TCP connection from {addr}")
+            except Exception as close_err:
+                self.logger.error(f"Error closing TCP client socket for {addr}: {close_err}")
+
+    def _handle_dns_request(self, data: bytes, addr: Tuple[str, int]):
+        """
+        Handles an incoming UDP DNS request. Parses the request,
+        performs domain check and DoH lookup concurrently, and sends back the response.
+
+        Args:
+            data: The raw DNS request data received via UDP.
+            addr: The client's address tuple (IP, port).
+        """
+        domain_to_check: Optional[str] = None
+        final_response: Optional[bytes] = None
+
         try:
             request = dns.message.from_wire(data)
-            domain_to_check = None
             if request.question:
                 qname = request.question[0].name
                 domain_to_check = qname.to_text(omit_final_dot=True)
                 qtype = dns.rdatatype.to_text(request.question[0].rdtype)
                 self.logger.info(
                     f"[>] Received (UDP) DNS request from \t{str(addr):<25} for [{domain_to_check}] (Type: {qtype})")
+
+                # Process domain check and DoH request for the query concurrently
+                final_response = self._process_dns_query_concurrently(data, domain_to_check, "UDP")
+
             else:
-                # Should not happen if _is_dns_request passed, but handle defensively
-                self.logger.warning(f"Received DNS request from {addr} with no questions.")
+                # Handle requests with no questions
+                self.logger.warning(f"Received DNS request from {addr} (UDP) with no questions.")
                 # Send FORMERR response
-                error_response = self._create_error_response(data,
-                                                             dns.rcode.FORMERR)  # Format Error might be more appropriate
-                if error_response:
-                    try:
-                        self.udp_socket.sendto(error_response, addr)
-                    except socket.error as send_err:
-                        self.logger.warning(f"Socket error sending FORMERR to {addr}: {send_err}")
-                return
+                final_response = self._create_error_response(data, dns.rcode.FORMERR)
+                # Proceed to send this response below
 
-            # ----- Prepare for the concurrent operations -----
-            # Initialize variables to use threads and store results of concurrent operations
-            domain_checker: Optional[DomainChecker] = None
-            doh_thread: Optional[threading.Thread] = None
-
-            # Use a list to hold the result from the DoH thread as it is mutable
-            doh_result: List[Optional[bytes]] = [None]
-
-            # ----- Start the concurrent checks -----
-            if self.checker_service is not None and domain_to_check:
-                if domain_to_check != "ismalicious.com" and domain_to_check != "www.virustotal.com":  # Prevent checking domain validators
-                    check_wait_start = time.monotonic()  # TODO remove
-                    domain_checker = DomainChecker(domain_to_check, service=self.checker_service)
-                    domain_checker.start_checks()
-                    self.logger.debug(f"Started domain checks for {domain_to_check} (UDP)")
-
-            # Define the target function for the DoH thread
-            def doh_worker():
-                try:
-                    doh_result[0] = self._forward_to_doh(data)  # Store result in mutable list
-                except Exception as e_doh:
-                    self.logger.error(f"Exception in DoH worker thread for {domain_to_check} (UDP): {e_doh}",
-                                      exc_info=True)
-                    doh_result[0] = None
-
-            # Start DoH request in its own thread
-            self.logger.debug(f"Started DoH forwarding thread for {domain_to_check} (UDP)")
-            doh_wait_start = time.monotonic()  # TODO remove
-            doh_thread = threading.Thread(target=doh_worker, daemon=True)
-            doh_thread.start()
-
-            # ----- Wait for results of the concurrent checks -----
-            # Wait for DoH request thread
-            if doh_thread:
-                doh_thread.join(timeout=6.0)
-                self.logger.debug(
-                    f"DoH (UDP) thread for \t[{domain_to_check}] (UDP) finished or timed out in {time.monotonic() - doh_wait_start:.2f}s")  # TODO remove time tracking
-                if doh_thread.is_alive():
-                    self.logger.warning(f"DoH (UDP) thread for \t[{domain_to_check}] timed out.")
-
-            # Wait for domain checks (if started)
-            if domain_checker:
-                domain_checker.wait_for_completion(timeout=4.0)
-                self.logger.debug(
-                    f"Domain checks (UDP) for \t[{domain_to_check}] finished or timed out in {time.monotonic() - check_wait_start:.2f}s")  # TODO remove time tracking
-
-            # ----- Process the results -----
-            final_response: Optional[bytes] = None
-
-            # Check domain status if blocking enabled and checks were run
-            is_bad_domain = False
-            if self.checker_service is not None and domain_checker:
-                if domain_checker.is_malicious(self.block_threshold_malicious):
-                    self.logger.warning(
-                        f"[!!!] MALICIOUS domain blocked (UDP): [{domain_to_check}]")  # TODO: Think about adding score display
-                    is_bad_domain = True
-                elif domain_checker.is_suspicious(self.block_threshold_suspicious):
-                    self.logger.warning(
-                        f"[!] SUSPICIOUS domain blocked (UDP): [{domain_to_check}]")  # TODO: Think about adding score display
-                    is_bad_domain = True
-
-            # If domain is not bad, use DoH result
-            if not is_bad_domain:
-                response_data = doh_result[0]  # Get result from the shared list
-                if response_data:
-                    final_response = response_data
-                    try:
-                        # Log received response information
-                        response_msg = dns.message.from_wire(response_data)
-                        rcode_text = dns.rcode.to_text(response_msg.rcode())
-                        answer_count = len(response_msg.answer)
-                        self.logger.info(
-                            f"[+] DoH Response for \t\t[{domain_to_check}]: \t{rcode_text}, {answer_count} answers")
-
-                        # Log every IPv4 and IPv6 addresses in the response
-                        for answer in response_msg.answer:
-                            # Loop through each resource record in the answer.
-                            for record in answer:
-                                # Check if the record is an A record (IPv4 address).
-                                if record.rdtype == dns.rdatatype.A:
-                                    self.logger.info(f"  ↳ IPv4: {record.address:<15}\t\t[{domain_to_check}]")
-
-                                elif record.rdtype == dns.rdatatype.AAAA:
-                                    self.logger.info(f"  ↳ IPv6: {record.address:<39}\t\t[{domain_to_check}]")
-
-                    except Exception:
-                        self.logger.warning("Could not parse DoH response for logging (UDP).")
-                else:
-                    # DoH failed or timed out, create SERVFAIL
-                    self.logger.error(f"DoH lookup failed for {domain_to_check} (UDP). Sending SERVFAIL.")
-                    final_response = self._create_error_response(data, dns.rcode.SERVFAIL)
-
-            # If domain is not bad, use redirect
-            else:
-                # TODO: redirection logic here, SERVFAIL for now
-                final_response = self._create_error_response(data, dns.rcode.SERVFAIL)
-
-            # ----- Send parsed results as a response -----
+            # ----- Send response -----
             if final_response:
                 try:
                     self.udp_socket.sendto(final_response, addr)
-                    self.logger.debug(f"[<] Sent UDP response ({len(final_response)} bytes) to {addr}")
+                    self.logger.debug(f"[<] Sent UDP response ({len(final_response)} bytes) to {addr} for [{domain_to_check}]")
                 except (socket.error, OSError) as send_err:
-                    # This can happen if the client closes the "connection" before response arrives
                     self.logger.warning(
-                        f"Failed to send UDP response to {addr}: {send_err}. Client might have timed out or disconnected.")
+                        f"Failed to send UDP response to {addr} for [{domain_to_check}]: {send_err}. Client might have timed out or disconnected.")
             else:
-                # This means even SERVFAIL failed to generate
+                 # This case implies _process_dns_query_concurrently returned None unexpectedly
+                 # or FORMERR failed to generate.
                 self.logger.error(
                     f"No final response generated for UDP request from {addr} for {domain_to_check}. No response sent.")
 
 
         except dns.exception.DNSException as e:
+            # Errors during initial parsing
             self.logger.error(f"DNS (UDP) processing error for {addr}: {e}", exc_info=True)
-            # Attempt to send a generic error response if possible
+            # Attempt to send a generic SERVFAIL error response
             error_response = self._create_error_response(data, dns.rcode.SERVFAIL)
             if error_response:
                 try:
                     self.udp_socket.sendto(error_response, addr)
-                except socket.error as send_err:
-                    self.logger.warning(f"Socket error sending error response to {addr}: {send_err}")
+                    self.logger.warning(f"Sent SERVFAIL error response over UDP to {addr} due to processing error.")
+                except (socket.error, OSError) as send_err:
+                    self.logger.warning(f"Socket error sending UDP error response to {addr}: {send_err}")
         except Exception as e:
+            # Catch-all for unexpected errors
             self.logger.error(f"Unexpected error handling DNS (UDP) request from {addr}: {e}", exc_info=True)
-            # Ssend SERVFAIL
+            # Attempt to send a generic SERVFAIL error response
             error_response = self._create_error_response(data, dns.rcode.SERVFAIL)
             if error_response:
                 try:
                     self.udp_socket.sendto(error_response, addr)
-                except socket.error as send_err:
-                    self.logger.warning(f"Socket error sending fallback SERVFAIL to {addr}: {send_err}")
+                except (socket.error, OSError) as send_err:
+                    self.logger.warning(f"Socket error sending fallback UDP SERVFAIL to {addr}: {send_err}")
+
 
 
     def _create_error_response(self, original_request_data: bytes, rcode: dns.rcode.Rcode) -> Optional[bytes]:
@@ -620,6 +600,7 @@ class DNSProxyServer:
         except Exception as e:
             self.logger.error(f"Failed to create error response with rcode {rcode}: {e}", exc_info=True)
             return None  # Fallback
+
 
     def _create_redirection_response(self, original_request_data: bytes, redirect_ip: str = "127.0.0.1") -> Optional[
         bytes]:
