@@ -95,16 +95,12 @@ class DNSProxyServer:
                 # Sleep allows checking the event periodically and reduces CPU usage
                 time.sleep(0.5)
 
-            # Keep the main thread alive using the event's wait method
-            # self.shutdown_event.wait()  # Wait until shutdown_event is set
 
         except KeyboardInterrupt:
             print("\nCtrl+C detected. Shutting down DNS proxy server...")
         except Exception as e:
             self.logger.error(f"Server startup error: {e}", exc_info=True)
         finally:
-            # Signal threads to stop
-            # self.shutdown_event.set()
             self.shutdown()
 
     def shutdown(self):
@@ -179,7 +175,7 @@ class DNSProxyServer:
 
                 else:
                     self.logger.error(f"Error in UDP listener: {e}", exc_info=True)
-                    # Optional: Add a small delay before retrying to prevent fast error loops
+                    # Add a small delay before retrying to prevent fast error loops
                     time.sleep(0.1)
 
             except Exception as e:
