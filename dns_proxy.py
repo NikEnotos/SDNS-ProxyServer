@@ -159,7 +159,7 @@ class DNSProxyServer:
 
                 if self._is_dns_request(data):
                     # Spawn a new thread to handle the request concurrently
-                    threading.Thread(target=self._handle_dns_request, args=(data, addr)).start()
+                    threading.Thread(target=self._handle_dns_request, args=(data, addr), daemon=True).start()
                 else:
                     self.logger.info(f"Received non-DNS UDP packet from {addr}, ignoring")
 
@@ -206,7 +206,7 @@ class DNSProxyServer:
                         pass
                     break
 
-                threading.Thread(target=self._handle_tcp_client, args=(client_sock, addr)).start()
+                threading.Thread(target=self._handle_tcp_client, args=(client_sock, addr), daemon=True).start()
 
             except socket.timeout:
                 # Loop continues, checking the shutdown_event again
