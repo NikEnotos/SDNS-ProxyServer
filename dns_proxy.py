@@ -407,6 +407,7 @@ class DNSProxyServer:
         """
         data: Optional[bytes] = None
         domain_to_check: Optional[str] = None
+        final_response: Optional[bytes] = None
         try:
             # Set timeout for receiving data on the client socket
             client_sock.settimeout(10.0)
@@ -441,18 +442,11 @@ class DNSProxyServer:
 
             # Parse amd log the query details
             request = dns.message.from_wire(data)
-            if request.question:
-                question = request.question[0]
-                domain_to_check = question.name.to_text(omit_final_dot=True)
-                qtype = dns.rdatatype.to_text(question.rdtype)
-                self.logger.info(
-                    f"[>] Received (TCP) DNS request from \t{str(addr):<25} for [{domain_to_check}] (Type: {qtype})")
-            else:
-                # Should not happen if _is_dns_request passed, but handle defensively
-                self.logger.warning(f"Received DNS request from {addr} (TCP) with no questions.")
-                # Send FORMERR response
-                final_response = self._create_error_response(data, dns.rcode.FORMERR)
-                # Proceed to send this response below
+
+            question = request.question[0]
+            domain_to_check = question.name.to_text(omit_final_dot=True)
+            qtype = dns.rdatatype.to_text(question.rdtype)
+            self.logger.info(f"[>] Received (TCP) DNS request from \t{str(addr):<25} for [{domain_to_check}] (Type: {qtype})")
 
             # If domain extracted, process its check and DoH request concurrently
             if domain_to_check:
@@ -516,22 +510,14 @@ class DNSProxyServer:
 
         try:
             request = dns.message.from_wire(data)
-            if request.question:
-                qname = request.question[0].name
-                domain_to_check = qname.to_text(omit_final_dot=True)
-                qtype = dns.rdatatype.to_text(request.question[0].rdtype)
-                self.logger.info(
-                    f"[>] Received (UDP) DNS request from \t{str(addr):<25} for [{domain_to_check}] (Type: {qtype})")
+            qname = request.question[0].name
+            domain_to_check = qname.to_text(omit_final_dot=True)
+            qtype = dns.rdatatype.to_text(request.question[0].rdtype)
+            self.logger.info(f"[>] Received (UDP) DNS request from \t{str(addr):<25} for [{domain_to_check}] (Type: {qtype})")
 
+            if domain_to_check:
                 # Process domain check and DoH request for the query concurrently
                 final_response = self._process_dns_query_concurrently(data, domain_to_check, "UDP")
-
-            else:
-                # Handle requests with no questions
-                self.logger.warning(f"Received DNS request from {addr} (UDP) with no questions.")
-                # Send FORMERR response
-                final_response = self._create_error_response(data, dns.rcode.FORMERR)
-                # Proceed to send this response below
 
             # ----- Send response -----
             if final_response:
