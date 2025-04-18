@@ -470,10 +470,10 @@ class DNSProxyServer:
             self.logger.warning(f"TCP connection from {addr} timed out during communication.")
         except (socket.error, OSError) as e:
             # Log specific socket errors related to TCP handling
-            self.logger.error(f"Socket error handling TCP client {addr}: {e}", exc_info=True)
+            self.logger.error(f"Socket error handling TCP client {addr}: {e}")
         except dns.exception.DNSException as e:
             # Errors during initial parsing
-            self.logger.error(f"DNS parsing/processing error for TCP client {addr}: {e}", exc_info=True)
+            self.logger.error(f"DNS parsing/processing error for TCP client {addr}: {e}")
             # Try sending SERVFAIL if possible
             if data:
                 try:
@@ -536,7 +536,7 @@ class DNSProxyServer:
 
         except dns.exception.DNSException as e:
             # Errors during initial parsing
-            self.logger.error(f"DNS (UDP) processing error for {addr}: {e}", exc_info=True)
+            self.logger.error(f"DNS (UDP) processing error for {addr}: {e}")
             # Attempt to send a generic SERVFAIL error response
             error_response = self._create_error_response(data, dns.rcode.SERVFAIL)
             if error_response:
@@ -652,7 +652,7 @@ class DNSProxyServer:
 
 
         except dns.exception.DNSException as e:
-            self.logger.error(f"DNS error creating redirection response for {qname}: {e}", exc_info=True)
+            self.logger.error(f"DNS error creating redirection response for {qname}: {e}")
             return self._create_error_response(original_request_data, dns.rcode.SERVFAIL)  # Fallback
         except Exception as e_redir:
             # Log the specific domain if available
@@ -698,7 +698,7 @@ class DNSProxyServer:
         self.logger.debug(f"\tForwarding query to DoH provider: {selected_doh_url}")  # Log which one is used
 
         # Define timeout for requests
-        request_timeout = 2.0  # seconds
+        request_timeout = 1.0  # seconds
 
         try:
             # Base64 encode the DNS request for DoH
@@ -720,11 +720,11 @@ class DNSProxyServer:
             # Check for successful response
             if response.status_code == 200 and response.headers.get('content-type') == 'application/dns-message':
                 self.logger.debug(
-                    f"\t[⩗] DoH POST successful for \t[${domain_name}] \t({len(response.content)} bytes).")
+                    f"\t[+] DoH POST successful for \t[{domain_name}] \t({len(response.content)} bytes).")
                 return response.content
             else:
                 self.logger.error(
-                    f"\t[-] POST DoH request to {selected_doh_url} for \t[${domain_name}] failed (Status: {response.status_code}), trying GET method as fallback.")
+                    f"\t[-] POST DoH request to {selected_doh_url} for \t[{domain_name}] failed (Status: {response.status_code}), trying GET method as fallback.")
 
             # Method 2: Fall back to GET with dns parameter if POST fails
             response = requests.get(
@@ -735,13 +735,45 @@ class DNSProxyServer:
             )
 
             if response.status_code == 200 and response.headers.get('content-type') == 'application/dns-message':
-                self.logger.debug(f"\t[⩗] DoH GET successful ({len(response.content)} bytes).")
+                self.logger.debug(f"\t[+] DoH GET successful ({len(response.content)} bytes).")
                 return response.content
             else:
                 self.logger.error(
-                    f"\t[-] GET DoH request to {selected_doh_url} failed (Status: {response.status_code}), trying JSON method as the last resort.")
+                    f"\t[-] GET DoH request to to {selected_doh_url} for \t[{domain_name}] failed (Status: {response.status_code}), trying JSON method as the last resort.")
+                return self._forward_to_fallback_doh(dns_data)
 
-            # Method 3: Try JSON format as a last resort
+        except requests.exceptions.Timeout:
+            self.logger.error(f"DoH request to {selected_doh_url} timed out after {request_timeout}s.")
+            return self._forward_to_fallback_doh(dns_data)
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"Error forwarding to DoH provider {selected_doh_url}. Trying JSON method. The error: {e}")
+            return self._forward_to_fallback_doh(dns_data)
+        # General exception handler
+        except Exception as e:
+            self.logger.error(f"Unexpected error forwarding to DoH {selected_doh_url}. Trying JSON method. The error: {e}", exc_info=True)
+            return self._forward_to_fallback_doh(dns_data)
+
+
+    def _forward_to_fallback_doh(self, dns_data: bytes) -> Optional[bytes]:
+        """
+        Fallback function used to forward a DNS request to a fallback DoH server using JSON methods.
+
+        Args:
+            dns_data: The raw DNS request data
+
+        Returns:
+            bytes: The DNS response data from the DoH server, or None if an error occurred
+        """
+        # Method 3: Try JSON format as a last resort
+
+        # Define timeout for requests
+        request_timeout = 1.0  # seconds
+
+        # Use JSON API
+        json_url = 'https://1.1.1.1/dns-query'
+        #json_url = 'https://8.8.8.8/resolve'   # TODO Implement list of URLs with adjustment based on the provider.
+
+        try:
             # Parse the DNS request to get the query details
             request = dns.message.from_wire(dns_data)
             if request.question:
@@ -749,9 +781,6 @@ class DNSProxyServer:
                 # qtype = dns.rdatatype.to_text(request.question[0].rdtype) # String type
                 qtype_int = request.question[0].rdtype  # Integer type
 
-                # Use JSON API
-                json_url = 'https://1.1.1.1/dns-query'
-                # json_url = 'https://8.8.8.8/resolve'   # TODO Implement list of URLs with adjustment based on the provider.
                 response = requests.get(
                     json_url,
                     params={
@@ -765,7 +794,7 @@ class DNSProxyServer:
 
                 if response.status_code == 200 and 'application/dns-json' in response.headers.get('content-type', ''):
                     # Convert JSON response back to DNS wire format
-                    self.logger.warning(f"\t[⩗] DoH request to {selected_doh_url} succeeded using JSON fallback.")
+                    self.logger.warning(f"\t[!] DoH request to [{qname}] succeeded using JSON fallback !")
                     json_response_data = response.json()
                     # Convert JSON back to wire format based on original request
                     wire_response = self._json_to_dns_response(json_response_data, request)
@@ -778,22 +807,19 @@ class DNSProxyServer:
                         # Fall through to general failure case
 
                     # If all methods failed
-                self.logger.error(f"\t[-] All DoH methods (POST, GET, JSON) failed for [{selected_doh_url}].")
+                self.logger.error(f"\t[-] All DoH methods (POST, GET, JSON) failed for [{qname}].")
                 return None
-
         except requests.exceptions.Timeout:
-            self.logger.error(f"DoH request to {selected_doh_url} timed out after {request_timeout}s.")
-            return None
-        except requests.exceptions.RequestException as e:
-            self.logger.error(f"Error forwarding to DoH provider {selected_doh_url}: {e}", exc_info=True)
+            self.logger.error(f"DoH request to {json_url} timed out after {request_timeout}s.")
             return None
         except dns.exception.DNSException as e:
-            self.logger.error(f"Error parsing original request for JSON DoH fallback: {e}", exc_info=True)
+            self.logger.error(f"Error parsing original request for JSON DoH fallback: {e}")
             return None
         # General exception handler
         except Exception as e:
-            self.logger.error(f"Unexpected error forwarding to DoH {selected_doh_url}: {e}", exc_info=True)
+            self.logger.error(f"Unexpected error forwarding to DoH {json_url}: {e}", exc_info=True)
             return None
+
 
     def _json_to_dns_response(self, json_data: Dict[str, Any], original_request: dns.message.Message) -> Optional[
         bytes]:
@@ -886,7 +912,7 @@ class DNSProxyServer:
 
 
         except dns.exception.DNSException as e_conv:
-            self.logger.error(f"DNS library error converting JSON to wire format: {e_conv}", exc_info=True)
+            self.logger.error(f"DNS library error converting JSON to wire format: {e_conv}")
             return None
         except Exception as e_conv_other:
             self.logger.error(f"Unexpected error converting JSON response to wire format: {e_conv_other}",
