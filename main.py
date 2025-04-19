@@ -84,6 +84,7 @@ def validate_ip_address(ip_string):
          raise argparse.ArgumentTypeError(
              f"Invalid IP address format: '{ip_string}'. Must be a valid IPv4 or IPv6 address."
          )
+    # Return the valid string if it matches
     return ip_string
 
 def get_host_ip():
@@ -109,7 +110,6 @@ def main():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter # Shows defaults in help
     )
 
-    # Optional: Expose listen IP and port
     parser.add_argument(
         '--listen-ip',
         default='0.0.0.0',
@@ -123,20 +123,20 @@ def main():
         metavar='PORT',
         help="Port for the proxy server to listen on."
     )
-    # Argument for specifying DoH providers (now defaults to None)
+    # Argument for specifying DoH providers
     parser.add_argument(
         '-d', '--doh-providers',
         nargs='+',  # Accepts one or more space-separated values
-        default=None,  # Default is None, logic below will handle it
+        default=None,  # Default is None, validation will handle it
         metavar='URL',
-        type=validate_doh_url,  # Add validation function here
+        type=validate_doh_url,
         help="List of DNS-over-HTTPS provider URLs. By default, this list REPLACES the built-in defaults. "
              "Use -a or --add-to-defaults to append to the defaults instead."
     )
     # Argument to ADD providers to the default list instead of replacing
     parser.add_argument(
         '-a', '--add-to-defaults',
-        action='store_true',  # Makes it a boolean flag
+        action='store_true',  # Makes it a boolean flag, True if present
         help="If specified, URLs passed via -d or --doh-providers are ADDED to the default list, "
              "instead of replacing it. Duplicates are ignored."
     )
@@ -150,7 +150,7 @@ def main():
         '-c', '--checker-service',
         choices=['virustotal', 'ismalicious', 'both'], # Valid explicit choices
         nargs='?', # Makes the argument optional
-        const='both', # Value if flag is present but without a value (e.g., --checker-service)
+        const='both', # Default value if flag is present but without a value
         default=None, # Value if the flag is not present at all
         metavar='SERVICE',
         help="Enable domain checking and select service(s). If flag is present without a value, uses 'both'. "
@@ -196,19 +196,19 @@ def main():
     user_providers = args.doh_providers if args.doh_providers else []
 
     if args.add_to_defaults:
-        # Combine defaults and user-provided list, removing duplicates
+        # Combine defaults and user-provided list
         combined_providers = DEFAULT_DOH_PROVIDERS + user_providers
-        # Use a set for uniqueness
+        # Use a set to remove duplicates
         final_doh_providers = list(set(combined_providers))
-        logger.info("Adding user-provided DoH URLs to default list.")
+        logger.debug("Adding user-provided DoH URLs to default list.")
     elif user_providers:
         # User provided list explicitly, and not adding to defaults, so use only user's list
         final_doh_providers = user_providers
-        logger.info("Using only user-provided DoH URLs.")
+        logger.debug("Using only user-provided DoH URLs.")
     else:
         # No user list provided and not adding to defaults, so use the original defaults
         final_doh_providers = DEFAULT_DOH_PROVIDERS
-        logger.info("Using the default list of DoH URLs.")
+        logger.debug("Using the default list of DoH URLs.")
 
     # Ensure the final list is not empty
     if not final_doh_providers:
@@ -244,7 +244,7 @@ def main():
     logger.info("Configuration parsed. Instantiating server.")
 
 
-    # Instantiate and start the server, passing the arguments
+    # Initialize and start the server, passing the arguments
     try:
         server = DNSProxyServer(
             listen_ip=args.listen_ip,
