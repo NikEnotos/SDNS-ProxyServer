@@ -19,7 +19,9 @@ DEFAULT_DOH_PROVIDERS = [
 # Regex breakdown:
     # ^https://       : Starts with https://
     # (               : Start group for host
-    #  \d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3} : IPv4 address
+    # (25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\.)   : first octet followed by dot
+    # {3}                                                   : repeat 3 times
+    # (25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9]       : last 4th octet
     # )               : End group for host
     # (:[0-9]{1,5})?  : Optional port (1-5 digits)
     # (/[\w\-./?=&%]*)? : Optional path (alphanumeric, -, ., /, ?, =, &, %)
