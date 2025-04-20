@@ -113,14 +113,14 @@ A `Dockerfile` is provided for easy containerized deployment.
 
 **Example Command (Host Network, with .env)**:
   ```bash
-  # Run with host networking, mount .env, enable 'both' checkers, INFO logging
+  # Run with host networking and mount .env
   sudo docker run -i --rm --network host \
   -v "$(pwd)/.env:/app/.env" \
   sdns-proxy [OPTIONS]
   ```
 **Example Command (Port Mapping, with manual keys adding)**:
    ```bash
-  # Map host port 5353 to container port 53 (UDP and TCP)
+  # Map host port 5353 to container port 53 (UDP and TCP) and set API keys explicitly
   docker run -i --rm \
   -p 5353:53/udp \
   -p 5353:53/tcp \
