@@ -14,11 +14,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the application code into the working directory
 COPY *.py ./
 
-# Set default values to empty strings. These will be overridden at runtime.
-ENV VIRUSTOTAL_API_KEY=""
-ENV ISMALICIOUS_API_KEY=""
-ENV ISMALICIOUS_API_SECRET=""
-
 # Expose the standard DNS ports the application listens on
 EXPOSE 53/udp
 EXPOSE 53/tcp
