@@ -1,5 +1,3 @@
-# Dockerfile
-
 # Use an official Python runtime as a parent image
 FROM python:3.13-slim
 
@@ -11,7 +9,7 @@ COPY requirements.txt ./
 
 # Install any needed packages specified in requirements.txt
 # --no-cache-dir reduces image size, --trusted-host is sometimes needed in firewalled environments
-RUN pip install --no-cache-dir --trusted-host pypi.python.org -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of the application code into the working directory
 COPY *.py ./
